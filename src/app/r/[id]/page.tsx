@@ -67,7 +67,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   const data = await fetchReport(id);
   if (!data) return { title: "Report Not Found — AgentLinter" };
 
-  const tier = data.totalScore >= 95 ? "S" : data.totalScore >= 90 ? "A+" : data.totalScore >= 85 ? "A" : data.totalScore >= 80 ? "A-" : data.totalScore >= 75 ? "B+" : "B";
+  const tier = data.totalScore >= 95 ? "S" : data.totalScore >= 90 ? "A+" : data.totalScore >= 85 ? "A" : data.totalScore >= 80 ? "A-" : data.totalScore >= 75 ? "B+" : data.totalScore >= 68 ? "B" : "C";
   const diagnosticsCount = Array.isArray(data.diagnostics) ? data.diagnostics.length : 0;
 
   return {

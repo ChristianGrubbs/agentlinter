@@ -39,7 +39,7 @@ function appendScoreLog(r: StoredReport): void {
   const crit = diags.filter((d) => d?.severity === "critical").length;
   const warn = diags.filter((d) => d?.severity === "warning").length;
   const home = os.homedir();
-  const shownWs = r.workspace.startsWith(home) ? r.workspace.replace(home, "~") : r.workspace;
+  const shownWs = (r.workspace.startsWith(home) ? r.workspace.replace(home, "~") : r.workspace).replaceAll("|", "\\|");
   const row = `| ${r.created_at.slice(0, 10)} | \`${shownWs}\` | ${r.score} | ${gradeFor(r.score)} | ${crit} | ${warn} | \`reports/${r.id}.json\` |`;
   // execFile with an args array: no shell, so backticks in the row are inert.
   execFile(OBSIDIAN_CLI, ["append", SCORE_LOG, "-m", row], (err) => {

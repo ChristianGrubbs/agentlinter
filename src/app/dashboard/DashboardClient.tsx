@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { gradeFor } from "@/lib/grade";
 
 const PRESETS = [
   { label: "~/ai-stack", path: "/Users/christian/ai-stack", isDefault: true },
@@ -10,10 +11,6 @@ const PRESETS = [
 ];
 
 type Row = { id: string; workspace: string; score: number; created_at: string };
-
-function gradeFor(score: number): string {
-  return score >= 95 ? "S" : score >= 90 ? "A+" : score >= 85 ? "A" : score >= 80 ? "A-" : score >= 75 ? "B+" : score >= 68 ? "B" : "C";
-}
 
 function scoreColor(score: number): string {
   return score >= 85 ? "#5eead4" : score >= 68 ? "#facc15" : "#f87171";
