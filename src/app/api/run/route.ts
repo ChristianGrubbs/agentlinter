@@ -42,7 +42,7 @@ function appendScoreLog(r: StoredReport): void {
   const shownWs = r.workspace.startsWith(home) ? r.workspace.replace(home, "~") : r.workspace;
   const row = `| ${r.created_at.slice(0, 10)} | \`${shownWs}\` | ${r.score} | ${gradeFor(r.score)} | ${crit} | ${warn} | \`reports/${r.id}.json\` |`;
   // execFile with an args array: no shell, so backticks in the row are inert.
-  execFile(OBSIDIAN_CLI, ["section-insert", SCORE_LOG, "## Runs", "--at-end", "-m", row], (err) => {
+  execFile(OBSIDIAN_CLI, ["append", SCORE_LOG, "-m", row], (err) => {
     if (err) console.error("score-log append failed (run still stored):", err.message);
   });
 }
