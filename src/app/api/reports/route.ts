@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { writeReport, listReports } from "@/lib/localStore";
+import { sanitizeDiagnostics } from "@/lib/sanitizeDiagnostics";
 import { nanoid } from "nanoid";
 
 // Rate limit: simple in-memory (resets on cold start, fine for MVP)
@@ -47,19 +48,6 @@ function validateReport(data: any): string | null {
     return "Payload too large (max 500KB)";
   }
   return null;
-}
-
-// Sanitize diagnostics: ensure no raw file content leaks
-function sanitizeDiagnostics(diagnostics: any[]): any[] {
-  return diagnostics.map((d) => ({
-    severity: String(d.severity || "info").slice(0, 10),
-    category: String(d.category || "").slice(0, 30),
-    rule: String(d.rule || "").slice(0, 80),
-    file: String(d.file || "").slice(0, 200),
-    line: typeof d.line === "number" ? d.line : undefined,
-    message: String(d.message || "").slice(0, 500),
-    fix: d.fix ? String(d.fix).slice(0, 500) : undefined,
-  }));
 }
 
 export async function POST(req: NextRequest) {

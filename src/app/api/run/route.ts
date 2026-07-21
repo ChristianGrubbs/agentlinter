@@ -11,6 +11,8 @@ import crypto from "node:crypto";
 import { nanoid } from "nanoid";
 import { writeReport, type StoredReport } from "@/lib/localStore";
 import { gradeFor } from "@/lib/grade";
+import { sanitizeDiagnostics } from "@/lib/sanitizeDiagnostics";
+import { isSameOrigin } from "@/lib/sameOrigin";
 
 const pExecFile = promisify(execFile);
 const CLI = process.env.AGENTLINTER_CLI
@@ -48,6 +50,9 @@ function appendScoreLog(r: StoredReport): void {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isSameOrigin(req)) {
+    return NextResponse.json({ error: "Cross-origin requests are not allowed" }, { status: 403 });
+  }
   if (running) return NextResponse.json({ error: "A run is already in progress" }, { status: 409 });
   let workspace: unknown;
   try {
@@ -77,7 +82,7 @@ export async function POST(req: NextRequest) {
       machine_id: crypto.createHash("sha256").update(`${os.hostname()}-${os.userInfo().username}`).digest("hex").slice(0, 32),
       score: cli.score,
       categories: cli.categories.map((c) => ({ name: c.name, score: c.score, weight: c.weight })),
-      diagnostics: cli.diagnostics,
+      diagnostics: sanitizeDiagnostics(cli.diagnostics),
       file_names: cli.files,
       files_scanned: cli.files.length,
       rules_checked: new Set((cli.diagnostics as { rule: string }[]).map((d) => d.rule)).size,
