@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { createClient } from "@supabase/supabase-js";
+import { readReport, listReports } from "@/lib/localStore";
 import ReportClientLoader from "./ReportClientLoader";
 import type { ReportData } from "./ReportClient";
 
@@ -41,96 +41,25 @@ const DEMO_DATA: ReportData = {
   ],
 };
 
-// Direct Supabase query (no self-fetch, works in SSR)
-function getSupabase() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) return null;
-  return createClient(url, key);
-}
-
 async function fetchReport(id: string): Promise<ReportData | null> {
   if (id === "demo") return DEMO_DATA;
-
-  const supabase = getSupabase();
-  if (!supabase) return null;
-
-  try {
-    const { data, error } = await supabase
-      .from("reports")
-      .select("*")
-      .eq("id", id)
-      .single();
-
-    if (error || !data) return null;
-
-    // Fetch history for this machine
-    const { data: history } = await supabase
-      .from("reports")
-      .select("id, score, created_at")
-      .eq("machine_id", data.machine_id)
-      .order("created_at", { ascending: false })
-      .limit(10);
-
-    // Robust parsing with fallbacks
-    let categories = [];
-    try {
-      const rawCategories = data.categories;
-      if (Array.isArray(rawCategories)) {
-        categories = rawCategories.map((c: any) => ({
-          name: c?.name || "Unknown",
-          score: typeof c?.score === "number" ? c.score : 0,
-          weight: typeof c?.weight === "number" ? c.weight : 0.1,
-        }));
-      } else if (typeof rawCategories === "string") {
-        categories = JSON.parse(rawCategories).map((c: any) => ({
-          name: c?.name || "Unknown",
-          score: typeof c?.score === "number" ? c.score : 0,
-        }));
-      }
-    } catch (e) {
-      console.error("Failed to parse categories:", e);
-    }
-
-    let diagnostics = [];
-    try {
-      const rawDiagnostics = data.diagnostics;
-      if (Array.isArray(rawDiagnostics)) {
-        diagnostics = rawDiagnostics;
-      } else if (typeof rawDiagnostics === "string") {
-        diagnostics = JSON.parse(rawDiagnostics);
-      }
-    } catch (e) {
-      console.error("Failed to parse diagnostics:", e);
-    }
-
-    let fileNames = [];
-    try {
-      const rawFileNames = data.file_names;
-      if (Array.isArray(rawFileNames)) {
-        fileNames = rawFileNames;
-      } else if (typeof rawFileNames === "string") {
-        fileNames = JSON.parse(rawFileNames);
-      }
-    } catch (e) {
-      console.error("Failed to parse file names:", e);
-    }
-
-    return {
-      id: data.id,
-      workspace: "workspace",
-      totalScore: typeof data.score === "number" ? data.score : 0,
-      filesScanned: data.files_scanned || fileNames.length || 0,
-      timestamp: data.created_at || new Date().toISOString(),
-      categories,
-      diagnostics,
-      files: fileNames,
-      history: history || [],
-    };
-  } catch (e) {
-    console.error("Failed to fetch report:", e);
-    return null;
-  }
+  const data = readReport(id);
+  if (!data) return null;
+  return {
+    id: data.id,
+    workspace: data.workspace || "workspace",
+    totalScore: typeof data.score === "number" ? data.score : 0,
+    filesScanned: data.files_scanned || data.file_names.length || 0,
+    timestamp: data.created_at,
+    categories: (data.categories || []).map((c) => ({
+      name: c?.name || "Unknown",
+      score: typeof c?.score === "number" ? c.score : 0,
+      weight: typeof c?.weight === "number" ? c.weight : 0.1,
+    })),
+    diagnostics: Array.isArray(data.diagnostics) ? (data.diagnostics as ReportData["diagnostics"]) : [],
+    files: data.file_names || [],
+    history: listReports(10).map((h) => ({ id: h.id, score: h.score, created_at: h.created_at })),
+  };
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {

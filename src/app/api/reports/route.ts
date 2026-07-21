@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServiceSupabase } from "@/lib/supabase";
+import { writeReport, listReports } from "@/lib/localStore";
 import { nanoid } from "nanoid";
 
 // Rate limit: simple in-memory (resets on cold start, fine for MVP)
@@ -76,11 +76,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: validationError }, { status: 400 });
     }
 
-    const supabase = getServiceSupabase();
     const id = nanoid(12);
-
-    const { error } = await supabase.from("reports").insert({
+    writeReport({
       id,
+      workspace: typeof body.workspace === "string" ? body.workspace : "(shared via CLI)",
       machine_id: body.machineId,
       score: body.score,
       categories: body.categories,
@@ -88,19 +87,16 @@ export async function POST(req: NextRequest) {
       file_names: body.fileNames,
       files_scanned: body.fileNames.length,
       rules_checked: body.rulesChecked || 0,
+      created_at: new Date().toISOString(),
     });
 
-    if (error) {
-      console.error("Supabase insert error:", error);
-      return NextResponse.json({ error: "Failed to save report" }, { status: 500 });
-    }
-
-    return NextResponse.json({
-      id,
-      url: `https://agentlinter.com/r/${id}`,
-    });
+    return NextResponse.json({ id, url: `/r/${id}` });
   } catch (e) {
     console.error("Report API error:", e);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
+}
+
+export async function GET() {
+  return NextResponse.json({ reports: listReports(50) });
 }
