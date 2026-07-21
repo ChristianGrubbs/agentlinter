@@ -29,3 +29,7 @@ npm-debug.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local dev/prod server artifacts (Raycast launcher)
+.raycast-prod.log
+.raycast-prod.pid
