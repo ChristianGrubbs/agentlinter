@@ -1,16 +1,33 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import test from "node:test";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { clarityRules } from "../rules/clarity";
 import { consistencyRules } from "../rules/consistency";
 import { hooksStructureRules } from "../rules/hooksStructure";
 import { importValidatorRules } from "../rules/importValidator";
-import { skillSafetyRules } from "../rules/skillSafety";
+import {
+  CAPABILITY_LEADERS_V1,
+  SKILL_SAFETY_LOG_DEFAULT_PATH,
+  skillSafetyRules,
+} from "../rules/skillSafety";
 import { scanWorkspaceDetailed } from "../parser";
 import type { Diagnostic, FileInfo, Rule } from "../types";
 import { withWorkspace } from "./workspace";
 
 type DiagnosticTuple = [Diagnostic["severity"], string, string];
+
+const APPROVED_CAPABILITY_LEADERS_V1 = [
+  "Allows", "Ask", "Audit", "Author", "Break", "Browse", "Build", "Bulk-drain", "Call",
+  "Compact", "Configure", "Consolidate", "Create", "Debug", "Decide", "Design", "Detect",
+  "Dispatch", "Download", "Drain", "Drive", "Enforce", "Execute", "Find", "Generate", "Give",
+  "Grill", "Hand", "Implement", "Install", "Interview", "Invoke", "Log", "Manage", "Operate",
+  "Optimise", "Plan", "Prepare", "Query", "Read", "Remove", "Render", "Report", "Research",
+  "Review", "Run", "Scrape", "Search", "Set", "Teach", "Track", "Train", "Transcribe", "Turn",
+  "Upgrade", "Use", "Verify", "Write", "Summarize", "Apply", "Enable", "Document", "Archive",
+  "Grant", "Seed", "Publish", "Orchestrate",
+];
 
 function fixture(workspaceRoot: string, name: string, content: string): FileInfo {
   return {
@@ -231,6 +248,66 @@ test("skill trigger descriptions require a concrete capability or explicit trigg
   }
 });
 
+test("approved capability leaders honor the trigger contract", () => {
+  const rule = ruleById(skillSafetyRules, "skill-safety/skill-description-when-to-use");
+  const approvedLeaders = APPROVED_CAPABILITY_LEADERS_V1;
+  for (const leader of approvedLeaders) {
+    const mixedCase = [...leader].map((character, index) => (
+      index % 2 === 0 ? character.toUpperCase() : character.toLowerCase()
+    )).join("");
+    for (const variant of [leader.toLowerCase(), leader.toUpperCase(), mixedCase]) {
+      const description = `${variant} deployment manifests`;
+      const content = `---\nname: trigger\ndescription: ${description}\n---`;
+      assert.equal(rule.check([fixture("/workspace", "skills/trigger/SKILL.md", content)]).length, 0, description);
+    }
+  }
+
+  const cases = [
+    ["Capabilities include release notes when incidents occur", false],
+    ["Use this skill for audits whenever deployments fail", false],
+    ["Capabilities include release notes use for incident reviews", false],
+    ["Capabilities include release notes triggered by incident reviews", false],
+    ["Capabilities include release notes 요청 시", false],
+    ["Capabilities include release notes 사용 시", false],
+    ["Capabilities include release notes 필요 시", false],
+    ["Excellent release notes", true],
+    ["Database schema changes", true],
+    ["Build tools carefully", false],
+    ["Build a helper now", true],
+  ] as const;
+  for (const [description, shouldWarn] of cases) {
+    const content = `---\nname: trigger\ndescription: ${description}\n---`;
+    const diagnostics = rule.check([fixture("/workspace", "skills/trigger/SKILL.md", content)]);
+    assert.equal(diagnostics.length, shouldWarn ? 1 : 0, description);
+    if (shouldWarn) assert.match(diagnostics[0].message, /unrecognized trigger form/i);
+  }
+});
+
+test("capability leader vocabulary is frozen", () => {
+  assert.deepStrictEqual(
+    [...CAPABILITY_LEADERS_V1].sort(),
+    [...APPROVED_CAPABILITY_LEADERS_V1].sort(),
+  );
+});
+
+test("approved capability leaders reject generic tails but retain meaningful compound scope", () => {
+  const rule = ruleById(skillSafetyRules, "skill-safety/skill-description-when-to-use");
+  const cases = [
+    ["Build an assistant now", true],
+    ["Build a generator carefully", true],
+    ["Build release-note generators", false],
+  ] as const;
+
+  for (const [description, shouldWarn] of cases) {
+    const content = `---\nname: trigger\ndescription: ${description}\n---`;
+    assert.equal(
+      rule.check([fixture("/workspace", "skills/trigger/SKILL.md", content)]).length,
+      shouldWarn ? 1 : 0,
+      description,
+    );
+  }
+});
+
 test("optional author metadata", () => {
   const rule = ruleById(skillSafetyRules, "skill-safety/has-metadata");
   const content = "---\nname: build\ndescription: Use when the user asks for a build.\n---";
@@ -268,6 +345,7 @@ test("skill metadata fails closed on tagged values, anchors, aliases, and empty 
     "name: metadata\ndescription: !!str Create release notes",
     "name: metadata\ndescription: &summary Create release notes",
     "name: metadata\ndescription: *summary",
+    "name: metadata\ndescription: \"Create \\q release notes\"",
     "name: metadata\ndescription: |2",
     "name: metadata\ndescription: >-2\n  ",
     'name: metadata\ndescription: "Create release notes',
@@ -291,6 +369,7 @@ test("skill metadata parses supported plain, quoted, and indicator block strings
   const validFields = [
     "name: metadata\ndescription: Create release notes",
     'name: "metadata"\ndescription: "Create release notes"',
+    "name: metadata\ndescription: \"Create \\\"quoted\\\" release notes\"",
     "name: 'metadata'\ndescription: 'Create release notes'",
     "name: metadata\ndescription: |2\n  Create release notes",
     "name: metadata\ndescription: >-2\n  Summarize incident timelines",
@@ -341,6 +420,11 @@ test("dangerous-command context crosses delimiters without reading adjacent code
     ["adjacent unfenced code containing blocked", "echo blocked\nrm -rf /", "error"],
     ["shell echo of blocked prose", "echo Blocked example:\nrm -rf /", "error"],
     ["uppercase blocked policy", "BLOCKED: rm -rf /", "info"],
+    ["em-dash blocked policy", "Blocked — rm -rf /", "info"],
+    ["heading blocked command policy", "# BLOCKED COMMAND: rm -rf /", "info"],
+    ["numbered blocked policy", "1. Blocked command: rm -rf /", "info"],
+    ["hyphenated executable command", "blocked-command rm -rf /", "error"],
+    ["shell option after blocked", "blocked -- rm -rf /", "error"],
     ["lowercase blocked command policy", "blocked command\nrm -rf /", "info"],
     ["command-is-blocked policy", "This command is blocked:\nrm -rf /", "info"],
     ["must-not-execute policy", "must not execute rm -rf /", "info"],
@@ -374,6 +458,61 @@ test("supported shell fence identifiers preserve executable severity", () => {
     const diagnostics = rule.check([fixture("/workspace", "skills/shell/SKILL.md", content)]);
     assert.equal(diagnostics.length, 1, language);
     assert.equal(diagnostics[0].severity, "error", language);
+  }
+});
+
+test("skill-safety decision logging is opt-in, structured, and redacted", () => {
+  const logDirectory = mkdtempSync(path.join(tmpdir(), "agentlinter-skill-safety-"));
+  const logPath = path.join(logDirectory, "events.jsonl");
+  const previousEnabled = process.env.AGENTLINTER_SKILL_SAFETY_LOG;
+  const previousPath = process.env.AGENTLINTER_SKILL_SAFETY_LOG_PATH;
+  const metadataRule = ruleById(skillSafetyRules, "skill-safety/has-metadata");
+  const triggerRule = ruleById(skillSafetyRules, "skill-safety/skill-description-when-to-use");
+  const commandRule = ruleById(skillSafetyRules, "skill-safety/dangerous-commands");
+  const fixturePayload = "private-fixture-payload";
+  const file = fixture(
+    "/workspace",
+    "skills/logging/SKILL.md",
+    `---\nname: logging\ndescription: Build ${fixturePayload}\n---\nrm -rf /`,
+  );
+
+  try {
+    assert.equal(SKILL_SAFETY_LOG_DEFAULT_PATH, "/tmp/agentlinter-skill-safety.jsonl");
+    delete process.env.AGENTLINTER_SKILL_SAFETY_LOG;
+    process.env.AGENTLINTER_SKILL_SAFETY_LOG_PATH = logPath;
+    triggerRule.check([file]);
+    assert.equal(existsSync(logPath), false);
+
+    process.env.AGENTLINTER_SKILL_SAFETY_LOG = "1";
+    metadataRule.check([file]);
+    triggerRule.check([file]);
+    commandRule.check([file]);
+
+    const logText = readFileSync(logPath, "utf8");
+    assert.equal(logText.includes(fixturePayload), false);
+    assert.equal(logText.includes("rm -rf /"), false);
+    const events = logText.trim().split("\n").map((line) => JSON.parse(line));
+    assert.ok(events.some((entry) => entry.event === "skill-safety.yaml.parse"));
+    assert.ok(events.some((entry) => entry.event === "skill-safety.trigger-contract"));
+    assert.ok(events.some((entry) => entry.event === "skill-safety.command-context"));
+    for (const entry of events) {
+      assert.deepStrictEqual(Object.keys(entry).sort(), ["ctx", "event", "level", "loc", "run_id", "ts"]);
+      assert.equal(typeof entry.ts, "string");
+      assert.equal(typeof entry.run_id, "string");
+      assert.equal(typeof entry.level, "string");
+      assert.equal(typeof entry.event, "string");
+      assert.equal(typeof entry.loc, "string");
+      assert.equal(typeof entry.ctx, "object");
+      assert.ok(Object.values(entry.ctx).every((value) => (
+        ["string", "boolean", "number"].includes(typeof value)
+      )));
+    }
+  } finally {
+    if (previousEnabled === undefined) delete process.env.AGENTLINTER_SKILL_SAFETY_LOG;
+    else process.env.AGENTLINTER_SKILL_SAFETY_LOG = previousEnabled;
+    if (previousPath === undefined) delete process.env.AGENTLINTER_SKILL_SAFETY_LOG_PATH;
+    else process.env.AGENTLINTER_SKILL_SAFETY_LOG_PATH = previousPath;
+    rmSync(logDirectory, { recursive: true, force: true });
   }
 });
 

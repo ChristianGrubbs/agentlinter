@@ -1,7 +1,39 @@
 /* ─── Skill Safety Rules (10%) ─── */
 /* Pre-install security checks for agent skills */
 
+import { appendFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { Rule, Diagnostic } from "../types";
+
+export const SKILL_SAFETY_LOG_DEFAULT_PATH = "/tmp/agentlinter-skill-safety.jsonl";
+const SKILL_SAFETY_LOG_RUN_ID = randomUUID();
+
+type DecisionLogContext = Record<string, string | boolean | number>;
+
+function logSkillSafetyDecision({
+  event,
+  loc,
+  ctx,
+}: {
+  event: "skill-safety.yaml.parse" | "skill-safety.trigger-contract" | "skill-safety.command-context";
+  loc: string;
+  ctx: DecisionLogContext;
+}): void {
+  if (process.env.AGENTLINTER_SKILL_SAFETY_LOG !== "1") return;
+  const entry = {
+    ts: new Date().toISOString(),
+    run_id: SKILL_SAFETY_LOG_RUN_ID,
+    level: "info",
+    event,
+    loc,
+    ctx,
+  };
+  appendFileSync(
+    process.env.AGENTLINTER_SKILL_SAFETY_LOG_PATH || SKILL_SAFETY_LOG_DEFAULT_PATH,
+    `${JSON.stringify(entry)}\n`,
+    "utf8",
+  );
+}
 
 /** Patterns that indicate potentially dangerous skill behavior */
 const DANGEROUS_EXEC_PATTERNS = [
@@ -52,6 +84,87 @@ type YamlStringField = "name" | "description";
  * block scalars. Collections and explicit tags/anchors/aliases fail closed;
  * implicit block indentation follows its first content line and tabs fail.
  */
+function findYamlField(lines: string[], field: YamlStringField): { fieldIndex: number; rawValue: string } | null {
+  const fieldPattern = new RegExp(`^${field}:\\s*(.*)$`);
+  const fieldIndex = lines.findIndex((line) => fieldPattern.test(line));
+  if (fieldIndex === -1) return null;
+  return { fieldIndex, rawValue: lines[fieldIndex].match(fieldPattern)?.[1].trim() ?? "" };
+}
+
+function extractBlockYamlString({
+  lines,
+  fieldIndex,
+  rawValue,
+}: {
+  lines: string[];
+  fieldIndex: number;
+  rawValue: string;
+}): string | null {
+  const blockHeader = rawValue.match(
+    /^[>|](?:(?:[+-][1-9]?)|(?:[1-9][+-]?))?(?:\s+#.*)?$/,
+  );
+  if (!blockHeader) return null;
+
+  const headerSyntax = rawValue.replace(/\s+#.*$/, "");
+  const indentIndicator = headerSyntax.match(/[1-9]/)?.[0];
+  let minimumIndent = indentIndicator ? Number(indentIndicator) : null;
+  const blockLines: string[] = [];
+  for (let index = fieldIndex + 1; index < lines.length; index++) {
+    const line = lines[index];
+    const indentationPrefix = line.match(/^[ \t]*/)?.[0] ?? "";
+    if (indentationPrefix.includes("\t")) return null;
+    if (!line.trim()) {
+      blockLines.push("");
+      continue;
+    }
+
+    const indentation = indentationPrefix.length;
+    if (indentation === 0) break;
+    if (minimumIndent === null) minimumIndent = indentation;
+    if (indentation < minimumIndent) return null;
+    blockLines.push(line.slice(minimumIndent).trim());
+  }
+  const value = blockLines.join(" ").trim();
+  return value || null;
+}
+
+function hasValidDoubleQuotedEscapes(value: string): boolean {
+  const escape = /\\(?:[0abtnvfre "\/\\N_LP]|x[\dA-Fa-f]{2}|u[\dA-Fa-f]{4}|U[\dA-Fa-f]{8})/gy;
+  for (let index = 0; index < value.length; index++) {
+    if (value[index] !== "\\") continue;
+    escape.lastIndex = index;
+    if (!escape.exec(value)) return false;
+    index = escape.lastIndex - 1;
+  }
+  return true;
+}
+
+function extractDoubleQuotedYamlString(rawValue: string): string | null {
+  const doubleQuoted = rawValue.match(/^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/);
+  if (!doubleQuoted || !hasValidDoubleQuotedEscapes(doubleQuoted[1])) return null;
+  const value = doubleQuoted[1].replace(/\\"/g, '"').trim();
+  return value || null;
+}
+
+function extractSingleQuotedYamlString(rawValue: string): string | null {
+  const singleQuoted = rawValue.match(/^'((?:[^']|'')*)'\s*(?:#.*)?$/);
+  if (!singleQuoted) return null;
+  const value = singleQuoted[1].replace(/''/g, "'").trim();
+  return value || null;
+}
+
+function extractPlainYamlString(rawValue: string): string | null {
+  if (/^["']/.test(rawValue)) return null;
+  if (!rawValue || rawValue.startsWith("#") || /^(?:!|&|\*|\[|\{)/.test(rawValue)) {
+    return null;
+  }
+  const withoutComment = rawValue.replace(/\s+#.*$/, "").trim();
+  if (!withoutComment || /^(?:true|false|null|~|[-+]?\d+(?:\.\d+)?)$/i.test(withoutComment)) {
+    return null;
+  }
+  return withoutComment;
+}
+
 function extractYamlString({
   frontmatter,
   field,
@@ -60,63 +173,35 @@ function extractYamlString({
   field: YamlStringField;
 }): string | null {
   const lines = frontmatter.split("\n");
-  const fieldPattern = new RegExp(`^${field}:\\s*(.*)$`);
-  const fieldIndex = lines.findIndex((line) => fieldPattern.test(line));
-  if (fieldIndex === -1) return null;
-
-  const rawValue = lines[fieldIndex].match(fieldPattern)?.[1].trim() ?? "";
-  if (/^[>|]/.test(rawValue)) {
-    const blockHeader = rawValue.match(
-      /^[>|](?:(?:[+-][1-9]?)|(?:[1-9][+-]?))?(?:\s+#.*)?$/,
-    );
-    if (!blockHeader) return null;
-
-    const headerSyntax = rawValue.replace(/\s+#.*$/, "");
-    const indentIndicator = headerSyntax.match(/[1-9]/)?.[0];
-    let minimumIndent = indentIndicator ? Number(indentIndicator) : null;
-    const blockLines: string[] = [];
-    for (let index = fieldIndex + 1; index < lines.length; index++) {
-      const line = lines[index];
-      const indentationPrefix = line.match(/^[ \t]*/)?.[0] ?? "";
-      if (indentationPrefix.includes("\t")) return null;
-      if (!line.trim()) {
-        blockLines.push("");
-        continue;
-      }
-
-      const indentation = indentationPrefix.length;
-      if (indentation === 0) break;
-      if (minimumIndent === null) minimumIndent = indentation;
-      if (indentation < minimumIndent) return null;
-      blockLines.push(line.slice(minimumIndent).trim());
-    }
-    const value = blockLines.join(" ").trim();
-    return value || null;
-  }
-
-  const doubleQuoted = rawValue.match(/^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/);
-  if (doubleQuoted) {
-    const value = doubleQuoted[1].replace(/\\"/g, '"').trim();
-    return value || null;
-  }
-
-  const singleQuoted = rawValue.match(/^'((?:[^']|'')*)'\s*(?:#.*)?$/);
-  if (singleQuoted) {
-    const value = singleQuoted[1].replace(/''/g, "'").trim();
-    return value || null;
-  }
-
-  if (/^["']/.test(rawValue)) return null;
-
-  if (!rawValue || rawValue.startsWith("#") || /^(?:!|&|\*|\[|\{)/.test(rawValue)) {
+  const yamlField = findYamlField(lines, field);
+  if (!yamlField) {
+    logSkillSafetyDecision({
+      event: "skill-safety.yaml.parse",
+      loc: "extractYamlString",
+      ctx: { field, scalar_style: "missing", parsed: false },
+    });
     return null;
   }
-
-  const withoutComment = rawValue.replace(/\s+#.*$/, "").trim();
-  if (!withoutComment || /^(?:true|false|null|~|[-+]?\d+(?:\.\d+)?)$/i.test(withoutComment)) {
-    return null;
-  }
-  return withoutComment;
+  const scalarStyle = /^[>|]/.test(yamlField.rawValue)
+    ? "block"
+    : yamlField.rawValue.startsWith('"')
+      ? "double-quoted"
+      : yamlField.rawValue.startsWith("'")
+        ? "single-quoted"
+        : "plain";
+  const value = scalarStyle === "block"
+    ? extractBlockYamlString({ lines, ...yamlField })
+    : scalarStyle === "double-quoted"
+      ? extractDoubleQuotedYamlString(yamlField.rawValue)
+      : scalarStyle === "single-quoted"
+        ? extractSingleQuotedYamlString(yamlField.rawValue)
+        : extractPlainYamlString(yamlField.rawValue);
+  logSkillSafetyDecision({
+    event: "skill-safety.yaml.parse",
+    loc: "extractYamlString",
+    ctx: { field, scalar_style: scalarStyle, parsed: value !== null },
+  });
+  return value;
 }
 
 function extractDescription(frontmatter: string): string | null {
@@ -125,53 +210,72 @@ function extractDescription(frontmatter: string): string | null {
 
 const NON_CONCRETE_WORDS = new Set([
   "a", "an", "the", "it", "thing", "things", "stuff", "helper", "helpers", "something",
-  "anything", "task", "tasks", "needed", "necessary", "appropriate", "when",
+  "anything", "task", "tasks", "needed", "necessary", "appropriate", "when", "now", "carefully",
+  "assistant", "assistants", "generator", "generators",
 ]);
 
-// This is a bounded grammar, not a POS parser: explicit triggers pass with a
-// concrete tail; capability phrases reject determiners, generic objects,
-// productive modifier forms, and two irregular noun/modifier leaders that are
-// otherwise structurally indistinguishable from English base-form verbs.
-const NON_IMPERATIVE_LEADERS = new Set(["database", "fast"]);
+// Derived from the 2026-07-22 125-skill corpus audit; change only with a
+// corpus-backed vocabulary review.
+export const CAPABILITY_LEADERS_V1 = new Set([
+  "Allows", "Ask", "Audit", "Author", "Break", "Browse", "Build", "Bulk-drain", "Call",
+  "Compact", "Configure", "Consolidate", "Create", "Debug", "Decide", "Design", "Detect",
+  "Dispatch", "Download", "Drain", "Drive", "Enforce", "Execute", "Find", "Generate", "Give",
+  "Grill", "Hand", "Implement", "Install", "Interview", "Invoke", "Log", "Manage", "Operate",
+  "Optimise", "Plan", "Prepare", "Query", "Read", "Remove", "Render", "Report", "Research",
+  "Review", "Run", "Scrape", "Search", "Set", "Teach", "Track", "Train", "Transcribe", "Turn",
+  "Upgrade", "Use", "Verify", "Write", "Summarize", "Apply", "Enable", "Document", "Archive",
+  "Grant", "Seed", "Publish", "Orchestrate",
+]);
+const CAPABILITY_LEADER_CASEFOLD_V1 = new Set(
+  [...CAPABILITY_LEADERS_V1].map((leader) => leader.toLowerCase()),
+);
 
 function hasConcreteObject(text: string): boolean {
   const words = text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu) ?? [];
-  const objectHead = words.at(-1) ?? "";
-  if (/ly$/.test(objectHead) || /^(?:helper|assistant|generator)s?$/.test(objectHead)) {
-    return false;
-  }
   return words.some((word) => !NON_CONCRETE_WORDS.has(word) && !/ly$/.test(word));
 }
 
 function hasUsableTriggerDescription(description: string): boolean {
   const normalized = description.trim();
-  if (!normalized) return false;
+  let triggerForm = "unrecognized";
+  let accepted = false;
+  if (!normalized) {
+    logSkillSafetyDecision({
+      event: "skill-safety.trigger-contract",
+      loc: "hasUsableTriggerDescription",
+      ctx: { contract_version: "v1", trigger_form: triggerForm, accepted },
+    });
+    return false;
+  }
 
   const explicitTrigger = normalized.match(
     /\b(?:when(?:ever)?|use\s+for|triggered\s+by)\b\s*(.*)$/i,
   );
-  if (explicitTrigger) return hasConcreteObject(explicitTrigger[1]);
-  if (/요청\s*시|사용\s*시|필요\s*시/i.test(normalized)) return true;
-
-  const capability = normalized.match(/^([\p{L}][\p{L}'-]*)\s+(.+)$/u);
-  if (
-    !capability ||
-    /^(?:a|an|the)$/i.test(capability[1]) ||
-    NON_IMPERATIVE_LEADERS.has(capability[1].toLowerCase())
-  ) {
-    return false;
+  if (explicitTrigger) {
+    triggerForm = "explicit";
+    accepted = hasConcreteObject(explicitTrigger[1]);
+  } else if (/요청\s*시|사용\s*시|필요\s*시/i.test(normalized)) {
+    triggerForm = "localized-explicit";
+    accepted = true;
+  } else {
+    const capability = normalized.match(/^([\p{L}][\p{L}'-]*)\s+(.+)$/u);
+    if (capability && CAPABILITY_LEADER_CASEFOLD_V1.has(capability[1].toLowerCase())) {
+      triggerForm = "capability-leader-v1";
+      accepted = hasConcreteObject(capability[2]);
+    }
   }
-
-  if (/(?:ated|ized|ised|ified|ous|ful|less|ible|ellent|icient|istent|ulent)$/i.test(capability[1])) {
-    return false;
-  }
-  return hasConcreteObject(capability[2]);
+  logSkillSafetyDecision({
+    event: "skill-safety.trigger-contract",
+    loc: "hasUsableTriggerDescription",
+    ctx: { contract_version: "v1", trigger_form: triggerForm, accepted },
+  });
+  return accepted;
 }
 
 type CommandContext = "executable" | "blocked-example" | "reference";
 
 const BLOCKED_PROSE_STARTS = [
-  /^(?:blocked|rejected|forbidden)(?::|\s+(?:example|command)\b)/i,
+  /^(?:blocked|rejected|forbidden)(?:\s+command)?(?:\s*[:—]|\s+(?:example|command)\b)/i,
   /^(?:this|that|the)\s+command\s+is\s+(?:blocked|rejected|forbidden)\b/i,
   /^(?:detection\s+pattern|negative\s+test)\b/i,
   /^(?:must\s+not\s+execute|do\s+not\s+execute)\b/i,
@@ -235,7 +339,7 @@ function isBlockedProseLine(line: string): boolean {
 
   // A policy phrase must lead prose (or use "command is blocked"); shell that
   // merely echoes or assigns the same words is never demotion evidence.
-  const prose = line.trim().replace(/^[-*>|]\s*/, "");
+  const prose = line.trim().replace(/^(?:[-*>|]\s*|#{1,6}\s+|\d+[.)]\s*)/, "");
   return BLOCKED_PROSE_STARTS.some((pattern) => pattern.test(prose));
 }
 
@@ -270,20 +374,28 @@ function classifyCommandContext({
   lineIndex: number;
 }): CommandContext {
   const line = lines[lineIndex];
-  if (/^\s*(?:>|\|)/.test(line)) return "reference";
   const context = contexts[lineIndex];
-  if (context.insideFence && context.language && !SHELL_FENCE_LANGUAGES.has(context.language)) {
-    return "reference";
+  let commandContext: CommandContext = "executable";
+  if (/^\s*(?:>|\|)/.test(line)) commandContext = "reference";
+  else if (context.insideFence && context.language && !SHELL_FENCE_LANGUAGES.has(context.language)) {
+    commandContext = "reference";
+  } else {
+    const prose = [
+      !context.insideFence && isBlockedProseLine(line) ? line : null,
+      adjacentBlockedProse({ lines, contexts, lineIndex, direction: -1 }),
+      adjacentBlockedProse({ lines, contexts, lineIndex, direction: 1 }),
+    ].filter((candidate): candidate is string => candidate !== null).join(" ");
+    if (prose) commandContext = "blocked-example";
   }
-
-  const prose = [
-    !context.insideFence && isBlockedProseLine(line) ? line : null,
-    adjacentBlockedProse({ lines, contexts, lineIndex, direction: -1 }),
-    adjacentBlockedProse({ lines, contexts, lineIndex, direction: 1 }),
-  ].filter((candidate): candidate is string => candidate !== null).join(" ");
-  if (prose) return "blocked-example";
-
-  return "executable";
+  logSkillSafetyDecision({
+    event: "skill-safety.command-context",
+    loc: "classifyCommandContext",
+    ctx: {
+      command_context: commandContext,
+      fence_context: context.insideFence ? (context.language ? "named" : "unnamed") : "outside",
+    },
+  });
+  return commandContext;
 }
 
 export const skillSafetyRules: Rule[] = [
@@ -350,8 +462,8 @@ export const skillSafetyRules: Rule[] = [
             category: "skillSafety",
             rule: this.id,
             file: file.name,
-            message: `Skill description does not explain when to use it: "${description.substring(0, 80)}"`,
-            fix: 'Add "when to use" context to description. Example: "Use when user asks for X" or "When Claude needs to Y".',
+            message: "Skill description has an unrecognized trigger form.",
+            fix: "Add a clear trigger clause or propose a corpus-backed vocabulary addition.",
           });
         }
       }
