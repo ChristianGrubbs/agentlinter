@@ -194,6 +194,8 @@ test("skill trigger descriptions require a concrete capability or explicit trigg
   const corpus = [
     ["Create release notes", false],
     ["Summarize incident timelines", false],
+    ["Apply security patches", false],
+    ["Enable integrations", false],
     ["Install CLI tools", false],
     ["Document API behavior", false],
     ["Archive old logs", false],
@@ -204,6 +206,8 @@ test("skill trigger descriptions require a concrete capability or explicit trigg
     ["Use when the user asks for release notes", false],
     ["Whenever CI reports a failed deployment, inspect its logs", false],
     ["A release note generator", true],
+    ["Database schema changes", true],
+    ["Fast release notes", true],
     ["Database migration helper", true],
     ["Release note generator", true],
     ["Excellent release notes", true],
@@ -266,6 +270,10 @@ test("skill metadata fails closed on tagged values, anchors, aliases, and empty 
     "name: metadata\ndescription: *summary",
     "name: metadata\ndescription: |2",
     "name: metadata\ndescription: >-2\n  ",
+    'name: metadata\ndescription: "Create release notes',
+    "name: metadata\ndescription: 'Create release notes",
+    "name: metadata\ndescription: |\n  Create release notes\n continuation is under-indented",
+    "name: metadata\ndescription: |\n\tCreate release notes",
   ];
 
   for (const fields of invalidFields) {
@@ -287,6 +295,7 @@ test("skill metadata parses supported plain, quoted, and indicator block strings
     "name: metadata\ndescription: |2\n  Create release notes",
     "name: metadata\ndescription: >-2\n  Summarize incident timelines",
     "name: metadata\ndescription: | # revised 2026\n Create release notes",
+    "name: metadata\ndescription: |\n  Create release notes\n  Summarize deployment changes",
   ];
 
   for (const fields of validFields) {
@@ -330,6 +339,16 @@ test("dangerous-command context crosses delimiters without reading adjacent code
     ["blocked assignment on the command line", "blocked=false; rm -rf /", "error"],
     ["adjacent unfenced blocked assignment", "blocked=false\nrm -rf /", "error"],
     ["adjacent unfenced code containing blocked", "echo blocked\nrm -rf /", "error"],
+    ["shell echo of blocked prose", "echo Blocked example:\nrm -rf /", "error"],
+    ["uppercase blocked policy", "BLOCKED: rm -rf /", "info"],
+    ["lowercase blocked command policy", "blocked command\nrm -rf /", "info"],
+    ["command-is-blocked policy", "This command is blocked:\nrm -rf /", "info"],
+    ["must-not-execute policy", "must not execute rm -rf /", "info"],
+    ["do-not-execute policy", "do not execute rm -rf /", "info"],
+    ["rejected command policy", "Rejected command: rm -rf /", "info"],
+    ["forbidden command policy", "forbidden command: rm -rf /", "info"],
+    ["detection pattern policy", "detection pattern: rm -rf /", "info"],
+    ["negative test policy", "negative test: rm -rf /", "info"],
     [
       "non-adjacent blocked prose",
       "Blocked example: do not execute this command.\n\nrm -rf /",

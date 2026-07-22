@@ -49,7 +49,8 @@ type YamlStringField = "name" | "description";
 
 /**
  * Parse the YAML string subset needed by skill metadata: plain, quoted, and
- * block scalars. Collections and explicit tags/anchors/aliases fail closed.
+ * block scalars. Collections and explicit tags/anchors/aliases fail closed;
+ * implicit block indentation follows its first content line and tabs fail.
  */
 function extractYamlString({
   frontmatter,
@@ -72,15 +73,22 @@ function extractYamlString({
 
     const headerSyntax = rawValue.replace(/\s+#.*$/, "");
     const indentIndicator = headerSyntax.match(/[1-9]/)?.[0];
-    const minimumIndent = indentIndicator ? Number(indentIndicator) : 1;
+    let minimumIndent = indentIndicator ? Number(indentIndicator) : null;
     const blockLines: string[] = [];
     for (let index = fieldIndex + 1; index < lines.length; index++) {
       const line = lines[index];
-      if (line.trim()) {
-        const indentation = line.match(/^[ \t]*/)?.[0].length ?? 0;
-        if (indentation < minimumIndent) break;
+      const indentationPrefix = line.match(/^[ \t]*/)?.[0] ?? "";
+      if (indentationPrefix.includes("\t")) return null;
+      if (!line.trim()) {
+        blockLines.push("");
+        continue;
       }
-      blockLines.push(line.trim());
+
+      const indentation = indentationPrefix.length;
+      if (indentation === 0) break;
+      if (minimumIndent === null) minimumIndent = indentation;
+      if (indentation < minimumIndent) return null;
+      blockLines.push(line.slice(minimumIndent).trim());
     }
     const value = blockLines.join(" ").trim();
     return value || null;
@@ -97,6 +105,8 @@ function extractYamlString({
     const value = singleQuoted[1].replace(/''/g, "'").trim();
     return value || null;
   }
+
+  if (/^["']/.test(rawValue)) return null;
 
   if (!rawValue || rawValue.startsWith("#") || /^(?:!|&|\*|\[|\{)/.test(rawValue)) {
     return null;
@@ -118,6 +128,12 @@ const NON_CONCRETE_WORDS = new Set([
   "anything", "task", "tasks", "needed", "necessary", "appropriate", "when",
 ]);
 
+// This is a bounded grammar, not a POS parser: explicit triggers pass with a
+// concrete tail; capability phrases reject determiners, generic objects,
+// productive modifier forms, and two irregular noun/modifier leaders that are
+// otherwise structurally indistinguishable from English base-form verbs.
+const NON_IMPERATIVE_LEADERS = new Set(["database", "fast"]);
+
 function hasConcreteObject(text: string): boolean {
   const words = text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu) ?? [];
   const objectHead = words.at(-1) ?? "";
@@ -138,11 +154,15 @@ function hasUsableTriggerDescription(description: string): boolean {
   if (/요청\s*시|사용\s*시|필요\s*시/i.test(normalized)) return true;
 
   const capability = normalized.match(/^([\p{L}][\p{L}'-]*)\s+(.+)$/u);
-  if (!capability || /^(?:a|an|the)$/i.test(capability[1])) return false;
+  if (
+    !capability ||
+    /^(?:a|an|the)$/i.test(capability[1]) ||
+    NON_IMPERATIVE_LEADERS.has(capability[1].toLowerCase())
+  ) {
+    return false;
+  }
 
-  // Imperative descriptions use a base-form-looking leader. Narrow productive
-  // adjective/adverb endings reject phrase-shaped leaders without a verb list.
-  if (/(?:ated|ized|ised|ified|ly|ous|ful|less|able|ible|ellent|icient|istent|ulent)$/i.test(capability[1])) {
+  if (/(?:ated|ized|ised|ified|ous|ful|less|ible|ellent|icient|istent|ulent)$/i.test(capability[1])) {
     return false;
   }
   return hasConcreteObject(capability[2]);
@@ -150,7 +170,12 @@ function hasUsableTriggerDescription(description: string): boolean {
 
 type CommandContext = "executable" | "blocked-example" | "reference";
 
-const BLOCKED_PROSE_CONTEXT = /\b(?:block(?:ed)?\s+(?:example|command)|reject(?:ed)?\s+(?:example|command)|forbidden\s+(?:example|command)|detection\s+pattern|negative\s+test|must\s+not\s+execute|do\s+not\s+execute)\b/i;
+const BLOCKED_PROSE_STARTS = [
+  /^(?:blocked|rejected|forbidden)(?::|\s+(?:example|command)\b)/i,
+  /^(?:this|that|the)\s+command\s+is\s+(?:blocked|rejected|forbidden)\b/i,
+  /^(?:detection\s+pattern|negative\s+test)\b/i,
+  /^(?:must\s+not\s+execute|do\s+not\s+execute)\b/i,
+];
 const SHELL_FENCE_LANGUAGES = new Set([
   "sh", "bash", "zsh", "fish", "pwsh", "powershell", "shell", "shellscript", "console", "terminal",
 ]);
@@ -206,11 +231,12 @@ function parseFenceContexts(lines: string[]): FenceContext[] {
 }
 
 function isBlockedProseLine(line: string): boolean {
-  if (!BLOCKED_PROSE_CONTEXT.test(line)) return false;
   if (/(?:^|[;\s])[^\s=;]+\s*=|[;&]{1,2}|\|\||[{}]/.test(line)) return false;
 
+  // A policy phrase must lead prose (or use "command is blocked"); shell that
+  // merely echoes or assigns the same words is never demotion evidence.
   const prose = line.trim().replace(/^[-*>|]\s*/, "");
-  return /^[A-Z]/.test(prose) || /[.:!?]$/.test(prose);
+  return BLOCKED_PROSE_STARTS.some((pattern) => pattern.test(prose));
 }
 
 function adjacentBlockedProse({
