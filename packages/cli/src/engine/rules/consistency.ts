@@ -1,6 +1,7 @@
 /* ─── Consistency Rules (15%) ─── */
 
 import { Rule, Diagnostic } from "../types";
+import { resolveExistingReference } from "./importValidator";
 
 export const consistencyRules: Rule[] = [
   {
@@ -14,12 +15,6 @@ export const consistencyRules: Rule[] = [
       const checkFiles = files.filter(
         (f) => !f.name.startsWith("compound/") && !f.name.startsWith("memory/") && f.name !== "MEMORY.md"
       );
-      const fileNames = new Set(files.map((f) => f.name));
-      // Also track lowercase versions and base names (without path)
-      const fileNamesLower = new Set(files.map((f) => f.name.toLowerCase()));
-      const baseNames = new Set(files.map((f) => f.name.split("/").pop() || f.name));
-      const baseNamesLower = new Set(files.map((f) => (f.name.split("/").pop() || f.name).toLowerCase()));
-
       // Generic pattern references to skip (e.g., "Check SKILL.md for each" refers to a pattern, not a specific file)
       // Also includes common agent workspace file names that may exist but not be uploaded
       const PATTERN_REFS = new Set([
@@ -40,11 +35,7 @@ export const consistencyRules: Rule[] = [
         for (const match of refs) {
           const refName = match[1];
           if (PATTERN_REFS.has(refName)) continue; // skip generic patterns
-          // Check all variants: exact, lowercase, basename, basename lowercase
-          const exists = fileNames.has(refName) 
-            || fileNamesLower.has(refName.toLowerCase())
-            || baseNames.has(refName)
-            || baseNamesLower.has(refName.toLowerCase());
+          const exists = resolveExistingReference(file, refName) !== null;
           if (!exists) {
             diagnostics.push({
               severity: "error",
@@ -82,11 +73,7 @@ export const consistencyRules: Rule[] = [
           if (!["md", "js", "ts", "json", "yaml", "yml", "txt", "toml", "css", "html", "py", "sh", "mjs", "cjs", "jsx", "tsx"].includes(ext)) continue;
           // Must start with uppercase for .md files
           if (refName.endsWith(".md") && !/^[A-Z]/.test(refName)) continue;
-          // Check all variants
-          const exists = fileNames.has(refName) 
-            || fileNamesLower.has(refName.toLowerCase())
-            || baseNames.has(refName)
-            || baseNamesLower.has(refName.toLowerCase());
+          const exists = resolveExistingReference(file, refName) !== null;
           if (!exists) {
             const alreadyFound = diagnostics.some(
               (d) =>

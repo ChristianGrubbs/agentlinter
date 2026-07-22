@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { scanWorkspace, lint } from './engine';
+import { scanWorkspaceDetailed, lint } from './engine';
 import { formatJSON } from './engine/reporter';
 import { estimateBudget, formatBudgetReport } from './engine/budget';
 import { uploadReport } from './upload';
@@ -90,8 +90,8 @@ async function main() {
   }
 
   try {
-    const files = scanWorkspace(targetDir);
-    if (files.length === 0) {
+    const scan = scanWorkspaceDetailed(targetDir);
+    if (scan.files.length === 0) {
       if (jsonOutput) {
         console.log(JSON.stringify({ error: "No files found", score: 0 }));
       } else {
@@ -100,7 +100,7 @@ async function main() {
       process.exit(0);
     }
 
-    const result = lint(targetDir, files);
+    const result = lint(targetDir, scan.files, { scan: scan.summary });
 
     if (jsonOutput) {
       console.log(formatJSON(result));
