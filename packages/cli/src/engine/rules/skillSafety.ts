@@ -65,6 +65,45 @@ function extractDescription(frontmatter: string): string | null {
   return null;
 }
 
+const CAPABILITY_LEADING_VERBS = /^(?:generate|review|query|transcribe|install|drive|build|audit|manage)\s+(?:an?\s+|the\s+)?(?!(?:it|things?|stuff|helpers?|something)\b)\S+/i;
+
+function hasUsableTriggerDescription(description: string): boolean {
+  const normalized = description.trim();
+  if (!normalized) return false;
+
+  const hasExplicitTrigger =
+    /\b(?:when|whenever)\b/i.test(normalized) ||
+    /\buse\s+for\b/i.test(normalized) ||
+    /\btriggered\s+by\b/i.test(normalized) ||
+    /요청\s*시|사용\s*시|필요\s*시/i.test(normalized);
+
+  return hasExplicitTrigger || CAPABILITY_LEADING_VERBS.test(normalized);
+}
+
+type CommandContext = "executable" | "blocked-example" | "reference";
+
+const BLOCKED_COMMAND_CONTEXT = /\b(?:block(?:ed)?|reject(?:ed|ion)?|forbidden|detection\s+pattern|negative\s+test|must\s+not\s+execute|do\s+not\s+execute)\b/i;
+const SHELL_FENCE_LANGUAGES = new Set(["sh", "bash", "zsh", "shell", "shellscript", "console", "terminal"]);
+
+function classifyCommandContext(
+  lines: string[],
+  lineIndex: number,
+  fenceLanguage: string | null,
+): CommandContext {
+  const adjacentContext = lines
+    .slice(Math.max(0, lineIndex - 1), Math.min(lines.length, lineIndex + 2))
+    .join(" ");
+  if (BLOCKED_COMMAND_CONTEXT.test(adjacentContext)) return "blocked-example";
+
+  const line = lines[lineIndex];
+  if (/^\s*(?:>|\|)/.test(line)) return "reference";
+  if (fenceLanguage && !SHELL_FENCE_LANGUAGES.has(fenceLanguage.toLowerCase())) {
+    return "reference";
+  }
+
+  return "executable";
+}
+
 export const skillSafetyRules: Rule[] = [
   {
     id: "skill-safety/skill-name-match-dir",
@@ -125,21 +164,7 @@ export const skillSafetyRules: Rule[] = [
         const description = extractDescription(frontmatter);
         if (!description) continue; // missing description handled by has-metadata
 
-        // Check if description includes "when to use" guidance
-        const hasWhenToUse =
-          /when\s+to\s+use/i.test(description) ||
-          /use\s+when/i.test(description) ||
-          /use\s+(?:\w+\s+)?when/i.test(description) ||
-          /use\s+(?:for|to)\s/i.test(description) ||
-          /whenever\s/i.test(description) ||
-          /요청\s*시|사용\s*시|필요\s*시/i.test(description) ||
-          /when\s+claude/i.test(description) ||
-          /when\s+(?:the\s+)?(?:user|agent)/i.test(description) ||
-          /for\s+(?:when|situations?\s+where)/i.test(description) ||
-          /invok(?:e|ed)\s+when/i.test(description) ||
-          /trigger(?:ed)?\s+when/i.test(description);
-
-        if (!hasWhenToUse) {
+        if (!hasUsableTriggerDescription(description)) {
           diagnostics.push({
             severity: "warning",
             category: "skillSafety",
@@ -158,7 +183,7 @@ export const skillSafetyRules: Rule[] = [
     id: "skill-safety/has-metadata",
     category: "skillSafety",
     severity: "warning",
-    description: "Skills should have proper metadata (name, description, author)",
+    description: "Skills should have required metadata (name and description)",
     check(files) {
       const diagnostics: Diagnostic[] = [];
       const skillFiles = files.filter(
@@ -173,24 +198,24 @@ export const skillSafetyRules: Rule[] = [
             category: "skillSafety",
             rule: this.id,
             file: file.name,
-            message: "Skill missing YAML frontmatter (name, description, author).",
-            fix: "Add frontmatter: ---\\nname: skill-name\\ndescription: ...\\nauthor: ...\\n---",
+            message: "Skill missing YAML frontmatter (name and description).",
+            fix: "Add frontmatter: ---\\nname: skill-name\\ndescription: ...\\n---",
           });
           continue;
         }
 
         const frontmatter = file.content.split("---")[1] || "";
-        if (!frontmatter.includes("author")) {
+        if (!/^name:\s*\S+/m.test(frontmatter)) {
           diagnostics.push({
             severity: "info",
             category: "skillSafety",
             rule: this.id,
             file: file.name,
-            message: "Skill missing author field — unattributed skills are harder to trust.",
-            fix: "Add author field to frontmatter.",
+            message: "Skill missing name field — it cannot be routed reliably.",
+            fix: "Add a non-empty name field to frontmatter.",
           });
         }
-        if (!frontmatter.includes("description")) {
+        if (!extractDescription(frontmatter)) {
           diagnostics.push({
             severity: "info",
             category: "skillSafety",
@@ -215,23 +240,21 @@ export const skillSafetyRules: Rule[] = [
       const skillFiles = files.filter((f) => f.name.includes("skills/"));
 
       for (const file of skillFiles) {
-        const isSecurity = isSecuritySkill(file);
-        let inCodeBlock = false;
+        let fenceLanguage: string | null = null;
         for (let i = 0; i < file.lines.length; i++) {
           const line = file.lines[i];
-          if (line.trim().startsWith("```")) inCodeBlock = !inCodeBlock;
+          const fenceMatch = line.trim().match(/^```\s*([^\s`]*)/);
+          if (fenceMatch) {
+            fenceLanguage = fenceLanguage === null ? (fenceMatch[1] || null) : null;
+            continue;
+          }
 
           for (const { pattern, name, severity } of DANGEROUS_EXEC_PATTERNS) {
             if (pattern.test(line)) {
-              // Demote if inside code block, documentation line, security skill, or install instructions
-              const isDoc = isSecurity
-                || inCodeBlock
-                || /^[\s]*[>$#❌✅|]/.test(line)
-                || /CHANGELOG|README|RELEASE/i.test(file.name)
-                || /install|prerequisite|setup|dependency/i.test(file.lines[Math.max(0, i - 3)]?.concat(file.lines[Math.max(0, i - 2)] || "", file.lines[Math.max(0, i - 1)] || "") || "");
+              const context = classifyCommandContext(file.lines, i, fenceLanguage);
 
               diagnostics.push({
-                severity: isDoc ? "info" : severity,
+                severity: context === "executable" ? severity : "info",
                 category: "skillSafety",
                 rule: this.id,
                 file: file.name,
