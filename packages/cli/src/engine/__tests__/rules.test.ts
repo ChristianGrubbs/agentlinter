@@ -123,16 +123,32 @@ test("nested, absolute, and home references reach on-disk resolution", () => {
         "Refer to ~/Manual.md before continuing.",
         "Read docs/README.md for the generic pattern.",
         "Read docs/Missing.md before continuing.",
+        `Check ${path.join(workspaceRoot, "absolute/Missing.md")} before continuing.`,
+        "Refer to ~/Missing.md before continuing.",
       ].join("\n");
       const diagnostics = rule.check([fixture(workspaceRoot, "AGENTS.md", content)]);
 
-      assert.equal(diagnostics.length, 1);
-      assert.match(diagnostics[0].message, /docs\/Missing\.md/);
+      assert.equal(diagnostics.length, 3);
+      assert.ok(diagnostics.some((diagnostic) => diagnostic.message.includes('"docs/Missing.md"')));
+      assert.ok(diagnostics.some((diagnostic) => diagnostic.message.includes('"~/Missing.md"')));
+      assert.ok(diagnostics.some((diagnostic) => diagnostic.message.includes('"' + path.join(workspaceRoot, "absolute/Missing.md") + '"')));
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
     }
   });
+});
+
+test("ordinary dotted prose is not treated as a file reference", () => {
+  const rule = ruleById(consistencyRules, "consistency/referenced-files-exist");
+  const content = [
+    "See example.com for documentation.",
+    "Read Node.js guidance before continuing.",
+    "Check process.env when configuring the runtime.",
+    "Refer to Page.captureScreenshot in the browser protocol.",
+  ].join("\n");
+
+  assertRuleOutput(rule, [fixture("/workspace", "AGENTS.md", content)], []);
 });
 
 test("circular imports normalize directory-relative and alias paths to analyzed files", () => {

@@ -4,11 +4,14 @@ import { Rule, Diagnostic } from "../types";
 import { resolveExistingReference } from "./importValidator";
 import * as path from "path";
 
-const REFERENCE_PATH = String.raw`(?:~\/|\/|\.\.?\/)?(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9]+`;
+const REFERENCE_PATH_PREFIX = String.raw`(?:~\/|\/|\.\.?\/)?(?:[A-Za-z0-9_.-]+\/)*`;
+const REFERENCE_BASENAME = String.raw`[A-Za-z0-9_.-]+`;
+const REFERENCE_PATH = `${REFERENCE_PATH_PREFIX}${REFERENCE_BASENAME}\\.[A-Za-z0-9]+`;
+const MARKDOWN_REFERENCE_PATH = `${REFERENCE_PATH_PREFIX}${REFERENCE_BASENAME}\\.md`;
 const OPTIONAL_REFERENCE_QUOTE = "[`\"']?";
 const DIRECTIVE_REFERENCE_PATTERN = new RegExp(
   String.raw`(?:see|read|check|refer to|load|include)\s+` +
-    `${OPTIONAL_REFERENCE_QUOTE}(${REFERENCE_PATH})(?:#[a-z0-9-]+)?${OPTIONAL_REFERENCE_QUOTE}`,
+    `${OPTIONAL_REFERENCE_QUOTE}(${MARKDOWN_REFERENCE_PATH})(?:#[a-z0-9-]+)?${OPTIONAL_REFERENCE_QUOTE}`,
   "gi",
 );
 const BACKTICK_REFERENCE_PATTERN = new RegExp(
