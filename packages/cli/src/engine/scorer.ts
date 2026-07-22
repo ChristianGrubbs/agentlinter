@@ -6,14 +6,17 @@ import {
   CategoryScore,
   LintResult,
   Diagnostic,
-  CATEGORY_WEIGHTS,
+  ScanSummary,
 } from "./types";
 import { allRules } from "./rules";
+import { evidenceForRule } from "./rules/evidence";
+import { SCORING_POLICY, calculateWeightedTotal, categoryWeight } from "./scoringPolicy";
+import { logEngineDecision } from "./decisionLog";
 
 /**
  * Run all rules and compute scores
  */
-export function lint(workspacePath: string, files: FileInfo[]): LintResult {
+export function lint(workspacePath: string, files: FileInfo[], { scan }: { scan: ScanSummary }): LintResult {
   // Separate core agent files from skill files
   const coreFiles = files.filter((f) => !f.name.startsWith("skills/") && !f.name.includes("/skills/"));
   const skillFiles = files.filter((f) => f.name.startsWith("skills/"));
@@ -21,15 +24,28 @@ export function lint(workspacePath: string, files: FileInfo[]): LintResult {
   // Detect workspace context
   const context = files[0]?.context || "universal";
 
-  // Run all rules — skill files only go through skillSafety + runtime rules
-  const allDiagnostics: Diagnostic[] = [];
-  for (const rule of allRules) {
-    try {
-      // Skip rules that don't apply to this context
-      if (rule.applicableContexts && !rule.applicableContexts.includes(context) && !rule.applicableContexts.includes("universal")) {
-        continue;
-      }
+  const applicableRules = allRules.filter((rule) =>
+    !rule.applicableContexts
+    || rule.applicableContexts.includes(context)
+    || rule.applicableContexts.includes("universal"),
+  );
+  const rules = applicableRules.map((rule) => ({
+    id: rule.id,
+    category: rule.category,
+    defaultSeverity: rule.severity,
+    description: rule.description,
+    ...evidenceForRule({ id: rule.id }),
+  }));
+  logEngineDecision({
+    event: "applicable_rules_selected",
+    loc: "engine.scorer.lint",
+    ctx: { applicableRuleCount: applicableRules.length },
+  });
 
+  // Run applicable rules — skill files only go through skillSafety + runtime rules
+  const allDiagnostics: Diagnostic[] = [];
+  for (const rule of applicableRules) {
+    try {
       const targetFiles =
         rule.category === "skillSafety" || rule.category === "runtime" || rule.category === "remoteReady"
           ? files       // these categories check everything
@@ -64,15 +80,24 @@ export function lint(workspacePath: string, files: FileInfo[]): LintResult {
     return {
       category: cat,
       score,
-      weight: CATEGORY_WEIGHTS[cat],
+      weight: categoryWeight(cat),
       diagnostics: catDiagnostics,
     };
   });
 
   // Compute total weighted score
-  const totalScore = Math.round(
-    categoryScores.reduce((sum, cs) => sum + cs.score * cs.weight, 0)
-  );
+  const totalScore = calculateWeightedTotal({ categoryScores });
+  const flaggedIds = new Set(allDiagnostics.map((diagnostic) => diagnostic.rule));
+  const ruleSummary = {
+    evaluated: applicableRules.length,
+    flagged: flaggedIds.size,
+    passed: applicableRules.length - flaggedIds.size,
+  };
+  logEngineDecision({
+    event: "score_completed",
+    loc: "engine.scorer.lint",
+    ctx: { categoryCount: categoryScores.length, diagnosticCount: allDiagnostics.length, totalScore },
+  });
 
   return {
     workspace: workspacePath,
@@ -81,6 +106,10 @@ export function lint(workspacePath: string, files: FileInfo[]): LintResult {
     categories: categoryScores,
     totalScore,
     diagnostics: allDiagnostics,
+    scan,
+    ruleSummary,
+    rules,
+    scoringPolicy: SCORING_POLICY,
     timestamp: new Date().toISOString(),
   };
 }
@@ -94,7 +123,7 @@ function computeCategoryScore(
   files: FileInfo[]
 ): number {
   // Start at 100, deduct for issues
-  let score = 100;
+  let score = SCORING_POLICY.basePerCategory;
 
   const criticals = diagnostics.filter((d) => d.severity === "critical");
   const errors = diagnostics.filter((d) => d.severity === "error");
@@ -102,39 +131,39 @@ function computeCategoryScore(
   const infos = diagnostics.filter((d) => d.severity === "info");
 
   // Deductions (with caps to prevent info avalanche from tanking score)
-  score -= criticals.length * 20; // criticals are showstoppers
+  score -= criticals.length * SCORING_POLICY.criticalPenalty; // criticals are showstoppers
 
   // skillSafety scaling: cap error/warning deductions when many skills exist
   if (category === "skillSafety") {
     const skillCount = files.filter((f) => f.name.includes("skills/")).length;
-    if (skillCount > 5) {
-      score -= Math.min(errors.length * 15, 60);
-      score -= Math.min(warnings.length * 2, 25);
+    if (skillCount > SCORING_POLICY.skillSafetyScaling.skillCountThreshold) {
+      score -= Math.min(errors.length * SCORING_POLICY.defaultErrorPenalty, SCORING_POLICY.skillSafetyScaling.errorCap);
+      score -= Math.min(warnings.length * SCORING_POLICY.skillSafetyScaling.warningPenalty, SCORING_POLICY.skillSafetyScaling.warningCap);
     } else {
-      score -= errors.length * 15;
-      score -= warnings.length * 5;
+      score -= errors.length * SCORING_POLICY.defaultErrorPenalty;
+      score -= warnings.length * SCORING_POLICY.defaultWarningPenalty;
     }
   } else {
     // Consistency: reduce per-error penalty (stale dates etc. pile up fast)
-    const errorPenalty = category === "consistency" ? 8 : 15;
+    const errorPenalty = category === "consistency" ? SCORING_POLICY.consistencyErrorPenalty : SCORING_POLICY.defaultErrorPenalty;
     score -= errors.length * errorPenalty;
     // Runtime: reduce warning penalty (3 instead of 5) to reward good patterns over warnings
-    const warningPenalty = category === "runtime" ? 3 : 5;
+    const warningPenalty = category === "runtime" ? SCORING_POLICY.runtimeWarningPenalty : SCORING_POLICY.defaultWarningPenalty;
     const rawWarningDeduction = warnings.length * warningPenalty;
     // Clarity cap: token/size warnings for large workspaces shouldn't tank to 0
     // Multi-agent setups legitimately have large memory/heartbeat/tools files
-    const warningCap = category === "clarity" ? 40 : Infinity;
+    const warningCap = category === "clarity" ? SCORING_POLICY.clarityWarningCap : Infinity;
     score -= Math.min(rawWarningDeduction, warningCap);
   }
 
-  score -= Math.min(infos.length * 1, 20); // infos are minor, capped at -20
+  score -= Math.min(infos.length * SCORING_POLICY.infoPenalty, SCORING_POLICY.infoCap); // infos are minor, capped at -20
 
   // Bonus points for good practices (category-specific)
   score += computeBonus(category, files);
 
   // Clamp to 0-100 (consistency gets a minimum floor of 25)
-  const floor = category === "consistency" ? 25 : 0;
-  return Math.max(floor, Math.min(100, Math.round(score)));
+  const floor = category === "consistency" ? SCORING_POLICY.consistencyFloor : 0;
+  return Math.max(floor, Math.min(SCORING_POLICY.basePerCategory, Math.round(score)));
 }
 
 /**

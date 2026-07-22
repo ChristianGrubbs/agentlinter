@@ -111,6 +111,12 @@ export interface ScoringPolicySnapshot {
   infoCap: number;
   clarityWarningCap: number;
   consistencyFloor: number;
+  skillSafetyScaling: {
+    skillCountThreshold: number;
+    errorCap: number;
+    warningPenalty: number;
+    warningCap: number;
+  };
   categoryWeights: Record<Category, number>;
   gradeScale: Array<{ grade: string; min: number }>;
   disclaimer: string;
