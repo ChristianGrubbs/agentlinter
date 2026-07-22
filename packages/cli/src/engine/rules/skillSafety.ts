@@ -343,6 +343,21 @@ function isBlockedProseLine(line: string): boolean {
   return BLOCKED_PROSE_STARTS.some((pattern) => pattern.test(prose));
 }
 
+const BLOCKED_EVIDENCE = /\b(?:was|is|are|were|got|gets)\s+\*{0,2}blocked\b|\bblocked\s+by\b/i;
+
+function isBlockedEvidenceLine(line: string): boolean {
+  // Same-line prose evidence that the mentioned command IS blocked by policy or
+  // tooling ("`rm -rf /x` was blocked", "blocked by the PreToolUse hook").
+  // Inline code spans are stripped first so shell content cannot vouch for
+  // itself; the shell-shape guard then applies to the surrounding prose only.
+  // Pipes and trailing-position "#" (a shell comment after content, unlike a
+  // leading Markdown heading marker) are shell shapes too: an unfenced
+  // `rm -rf / # was blocked` must never demote itself.
+  const prose = line.replace(/`[^`]*`/g, " ");
+  if (/(?:^|[;\s])[^\s=;]+\s*=|[;&]{1,2}|\||[{}]|\S.*#/.test(prose)) return false;
+  return BLOCKED_EVIDENCE.test(prose);
+}
+
 function adjacentBlockedProse({
   lines,
   contexts,
@@ -382,6 +397,7 @@ function classifyCommandContext({
   } else {
     const prose = [
       !context.insideFence && isBlockedProseLine(line) ? line : null,
+      !context.insideFence && isBlockedEvidenceLine(line) ? line : null,
       adjacentBlockedProse({ lines, contexts, lineIndex, direction: -1 }),
       adjacentBlockedProse({ lines, contexts, lineIndex, direction: 1 }),
     ].filter((candidate): candidate is string => candidate !== null).join(" ");
