@@ -37,6 +37,8 @@ const VALID_EVENTS = [
   "SessionEnd",
 ];
 
+const VALID_HANDLER_TYPES = new Set(["command", "prompt", "agent", "http", "mcp_tool"]);
+
 type HookHandler = {
   type: "command" | "prompt" | "agent" | "http" | "mcp_tool";
   command?: string;
@@ -75,7 +77,7 @@ function validateHookGroup(group: unknown): string | null {
 
   for (const handler of candidate.hooks) {
     if (!isRecord(handler)) return "Nested hook handler must be an object";
-    if (!["command", "prompt", "agent", "http", "mcp_tool"].includes(String(handler.type))) {
+    if (typeof handler.type !== "string" || !VALID_HANDLER_TYPES.has(handler.type)) {
       return 'Nested hook handler must have type "command", "prompt", "agent", "http", or "mcp_tool"';
     }
 

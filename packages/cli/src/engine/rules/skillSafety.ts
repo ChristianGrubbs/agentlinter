@@ -45,18 +45,41 @@ function isSecuritySkill(file: { name: string; content: string }): boolean {
   );
 }
 
-function extractYamlString(frontmatter: string, field: string): string | null {
+type YamlStringField = "name" | "description";
+
+/**
+ * Parse the YAML string subset needed by skill metadata: plain, quoted, and
+ * block scalars. Collections and explicit tags/anchors/aliases fail closed.
+ */
+function extractYamlString({
+  frontmatter,
+  field,
+}: {
+  frontmatter: string;
+  field: YamlStringField;
+}): string | null {
   const lines = frontmatter.split("\n");
   const fieldPattern = new RegExp(`^${field}:\\s*(.*)$`);
   const fieldIndex = lines.findIndex((line) => fieldPattern.test(line));
   if (fieldIndex === -1) return null;
 
   const rawValue = lines[fieldIndex].match(fieldPattern)?.[1].trim() ?? "";
-  if (/^[>|][+-]?(?:\s+#.*)?$/.test(rawValue)) {
+  if (/^[>|]/.test(rawValue)) {
+    const blockHeader = rawValue.match(
+      /^[>|](?:(?:[+-][1-9]?)|(?:[1-9][+-]?))?(?:\s+#.*)?$/,
+    );
+    if (!blockHeader) return null;
+
+    const headerSyntax = rawValue.replace(/\s+#.*$/, "");
+    const indentIndicator = headerSyntax.match(/[1-9]/)?.[0];
+    const minimumIndent = indentIndicator ? Number(indentIndicator) : 1;
     const blockLines: string[] = [];
     for (let index = fieldIndex + 1; index < lines.length; index++) {
       const line = lines[index];
-      if (line.trim() && !/^[ \t]/.test(line)) break;
+      if (line.trim()) {
+        const indentation = line.match(/^[ \t]*/)?.[0].length ?? 0;
+        if (indentation < minimumIndent) break;
+      }
       blockLines.push(line.trim());
     }
     const value = blockLines.join(" ").trim();
@@ -75,7 +98,9 @@ function extractYamlString(frontmatter: string, field: string): string | null {
     return value || null;
   }
 
-  if (!rawValue || rawValue.startsWith("#") || /^[\[{]/.test(rawValue)) return null;
+  if (!rawValue || rawValue.startsWith("#") || /^(?:!|&|\*|\[|\{)/.test(rawValue)) {
+    return null;
+  }
 
   const withoutComment = rawValue.replace(/\s+#.*$/, "").trim();
   if (!withoutComment || /^(?:true|false|null|~|[-+]?\d+(?:\.\d+)?)$/i.test(withoutComment)) {
@@ -85,13 +110,8 @@ function extractYamlString(frontmatter: string, field: string): string | null {
 }
 
 function extractDescription(frontmatter: string): string | null {
-  return extractYamlString(frontmatter, "description");
+  return extractYamlString({ frontmatter, field: "description" });
 }
-
-const NON_ACTION_STARTERS = new Set([
-  "a", "an", "the", "this", "that", "these", "those", "skill", "tool", "helper",
-  "assistant", "documentation", "instructions", "helpful",
-]);
 
 const NON_CONCRETE_WORDS = new Set([
   "a", "an", "the", "it", "thing", "things", "stuff", "helper", "helpers", "something",
@@ -100,7 +120,11 @@ const NON_CONCRETE_WORDS = new Set([
 
 function hasConcreteObject(text: string): boolean {
   const words = text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu) ?? [];
-  return words.some((word) => !NON_CONCRETE_WORDS.has(word));
+  const objectHead = words.at(-1) ?? "";
+  if (/ly$/.test(objectHead) || /^(?:helper|assistant|generator)s?$/.test(objectHead)) {
+    return false;
+  }
+  return words.some((word) => !NON_CONCRETE_WORDS.has(word) && !/ly$/.test(word));
 }
 
 function hasUsableTriggerDescription(description: string): boolean {
@@ -114,13 +138,19 @@ function hasUsableTriggerDescription(description: string): boolean {
   if (/요청\s*시|사용\s*시|필요\s*시/i.test(normalized)) return true;
 
   const capability = normalized.match(/^([\p{L}][\p{L}'-]*)\s+(.+)$/u);
-  if (!capability || NON_ACTION_STARTERS.has(capability[1].toLowerCase())) return false;
+  if (!capability || /^(?:a|an|the)$/i.test(capability[1])) return false;
+
+  // Imperative descriptions use a base-form-looking leader. Narrow productive
+  // adjective/adverb endings reject phrase-shaped leaders without a verb list.
+  if (/(?:ated|ized|ised|ified|ly|ous|ful|less|able|ible|ellent|icient|istent|ulent)$/i.test(capability[1])) {
+    return false;
+  }
   return hasConcreteObject(capability[2]);
 }
 
 type CommandContext = "executable" | "blocked-example" | "reference";
 
-const BLOCKED_COMMAND_CONTEXT = /\b(?:block(?:ed)?|reject(?:ed|ion)?|forbidden|detection\s+pattern|negative\s+test|must\s+not\s+execute|do\s+not\s+execute)\b/i;
+const BLOCKED_PROSE_CONTEXT = /\b(?:block(?:ed)?\s+(?:example|command)|reject(?:ed)?\s+(?:example|command)|forbidden\s+(?:example|command)|detection\s+pattern|negative\s+test|must\s+not\s+execute|do\s+not\s+execute)\b/i;
 const SHELL_FENCE_LANGUAGES = new Set([
   "sh", "bash", "zsh", "fish", "pwsh", "powershell", "shell", "shellscript", "console", "terminal",
 ]);
@@ -139,6 +169,8 @@ function normalizeFenceLanguage(info: string): string | null {
   return trimmed.split(/\s+/)[0].replace(/^\./, "").toLowerCase();
 }
 
+// Fence state is computed once so code lines never become prose evidence. An
+// adjacent prose line may cross exactly one immediate opening/closing delimiter.
 function parseFenceContexts(lines: string[]): FenceContext[] {
   const contexts: FenceContext[] = [];
   let activeFence: { marker: "`" | "~"; length: number; language: string | null } | null = null;
@@ -173,25 +205,44 @@ function parseFenceContexts(lines: string[]): FenceContext[] {
   return contexts;
 }
 
-function adjacentProse(
-  lines: string[],
-  contexts: FenceContext[],
-  lineIndex: number,
-  direction: -1 | 1,
-): string | null {
-  for (let index = lineIndex + direction; index >= 0 && index < lines.length; index += direction) {
-    if (contexts[index].delimiter || !lines[index].trim()) continue;
-    if (contexts[index].insideFence) return null;
-    return lines[index];
-  }
-  return null;
+function isBlockedProseLine(line: string): boolean {
+  if (!BLOCKED_PROSE_CONTEXT.test(line)) return false;
+  if (/(?:^|[;\s])[^\s=;]+\s*=|[;&]{1,2}|\|\||[{}]/.test(line)) return false;
+
+  const prose = line.trim().replace(/^[-*>|]\s*/, "");
+  return /^[A-Z]/.test(prose) || /[.:!?]$/.test(prose);
 }
 
-function classifyCommandContext(
-  lines: string[],
-  contexts: FenceContext[],
-  lineIndex: number,
-): CommandContext {
+function adjacentBlockedProse({
+  lines,
+  contexts,
+  lineIndex,
+  direction,
+}: {
+  lines: string[];
+  contexts: FenceContext[];
+  lineIndex: number;
+  direction: -1 | 1;
+}): string | null {
+  let adjacentIndex = lineIndex + direction;
+  if (adjacentIndex < 0 || adjacentIndex >= lines.length) return null;
+
+  if (contexts[adjacentIndex].delimiter) adjacentIndex += direction;
+  if (adjacentIndex < 0 || adjacentIndex >= lines.length) return null;
+  if (contexts[adjacentIndex].delimiter || contexts[adjacentIndex].insideFence) return null;
+
+  return isBlockedProseLine(lines[adjacentIndex]) ? lines[adjacentIndex] : null;
+}
+
+function classifyCommandContext({
+  lines,
+  contexts,
+  lineIndex,
+}: {
+  lines: string[];
+  contexts: FenceContext[];
+  lineIndex: number;
+}): CommandContext {
   const line = lines[lineIndex];
   if (/^\s*(?:>|\|)/.test(line)) return "reference";
   const context = contexts[lineIndex];
@@ -200,11 +251,11 @@ function classifyCommandContext(
   }
 
   const prose = [
-    context.insideFence ? null : line,
-    adjacentProse(lines, contexts, lineIndex, -1),
-    adjacentProse(lines, contexts, lineIndex, 1),
+    !context.insideFence && isBlockedProseLine(line) ? line : null,
+    adjacentBlockedProse({ lines, contexts, lineIndex, direction: -1 }),
+    adjacentBlockedProse({ lines, contexts, lineIndex, direction: 1 }),
   ].filter((candidate): candidate is string => candidate !== null).join(" ");
-  if (BLOCKED_COMMAND_CONTEXT.test(prose)) return "blocked-example";
+  if (prose) return "blocked-example";
 
   return "executable";
 }
@@ -225,7 +276,7 @@ export const skillSafetyRules: Rule[] = [
         if (!file.content.startsWith("---")) continue;
 
         const frontmatter = file.content.split("---")[1] || "";
-        const declaredName = extractYamlString(frontmatter, "name");
+        const declaredName = extractYamlString({ frontmatter, field: "name" });
         if (!declaredName) continue; // missing/invalid name is caught by has-metadata
 
         // Extract parent dir name from path like "skills/weather/SKILL.md"
@@ -308,7 +359,7 @@ export const skillSafetyRules: Rule[] = [
         }
 
         const frontmatter = file.content.split("---")[1] || "";
-        if (!extractYamlString(frontmatter, "name")) {
+        if (!extractYamlString({ frontmatter, field: "name" })) {
           diagnostics.push({
             severity: "info",
             category: "skillSafety",
@@ -350,7 +401,11 @@ export const skillSafetyRules: Rule[] = [
 
           for (const { pattern, name, severity } of DANGEROUS_EXEC_PATTERNS) {
             if (pattern.test(line)) {
-              const context = classifyCommandContext(file.lines, fenceContexts, i);
+              const context = classifyCommandContext({
+                lines: file.lines,
+                contexts: fenceContexts,
+                lineIndex: i,
+              });
 
               diagnostics.push({
                 severity: context === "executable" ? severity : "info",

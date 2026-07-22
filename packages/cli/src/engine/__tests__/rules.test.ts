@@ -62,6 +62,23 @@ test("an invalid command handler", () => {
   ]);
 });
 
+test("hook handler type must be a literal supported string", () => {
+  const rule = ruleById(hooksStructureRules, "claude-code/hooks-structure");
+  const malformedTypes = [
+    { type: ["prompt"], prompt: "Check the event" },
+    { type: { toString: "prompt" }, prompt: "Check the event" },
+    { type: 1, prompt: "Check the event" },
+  ];
+
+  for (const handler of malformedTypes) {
+    const content = JSON.stringify({ hooks: { SessionStart: [{ hooks: [handler] }] } });
+    const diagnostics = rule.check([fixture("/workspace", ".claude/settings.json", content)]);
+    assert.equal(diagnostics.length, 1, JSON.stringify(handler));
+    assert.equal(diagnostics[0].severity, "error");
+    assert.match(diagnostics[0].message, /must have type/i);
+  }
+});
+
 test("current official Claude hook events and handler types", () => {
   const rule = ruleById(hooksStructureRules, "claude-code/hooks-structure");
   const eventNames = [
@@ -177,12 +194,24 @@ test("skill trigger descriptions require a concrete capability or explicit trigg
   const corpus = [
     ["Create release notes", false],
     ["Summarize incident timelines", false],
+    ["Install CLI tools", false],
+    ["Document API behavior", false],
+    ["Archive old logs", false],
+    ["Grant repository access", false],
+    ["Seed test databases", false],
+    ["Publish migration guides", false],
+    ["Orchestrate deployment workflows", false],
     ["Use when the user asks for release notes", false],
     ["Whenever CI reports a failed deployment, inspect its logs", false],
     ["A release note generator", true],
+    ["Database migration helper", true],
+    ["Release note generator", true],
+    ["Excellent release notes", true],
+    ["Automated deployment workflows", true],
     ["Helpful assistant", true],
     ["Build a", true],
     ["Build a helper", true],
+    ["Build carefully", true],
     ["Manage things", true],
     ["Use when needed", true],
   ] as const;
@@ -225,6 +254,48 @@ test("skill metadata requires non-empty scalar strings", () => {
   }
 });
 
+test("skill metadata fails closed on tagged values, anchors, aliases, and empty block scalars", () => {
+  const rule = ruleById(skillSafetyRules, "skill-safety/has-metadata");
+  const invalidFields = [
+    "name: !!str metadata\ndescription: Create release notes",
+    "name: &skill metadata\ndescription: Create release notes",
+    "name: *skill\ndescription: Create release notes",
+    "name: metadata\ndescription: !!seq []",
+    "name: metadata\ndescription: !!str Create release notes",
+    "name: metadata\ndescription: &summary Create release notes",
+    "name: metadata\ndescription: *summary",
+    "name: metadata\ndescription: |2",
+    "name: metadata\ndescription: >-2\n  ",
+  ];
+
+  for (const fields of invalidFields) {
+    const diagnostics = rule.check([
+      fixture("/workspace", "skills/metadata/SKILL.md", `---\n${fields}\n---`),
+    ]);
+    assert.equal(diagnostics.length, 1, `Expected one metadata diagnostic for:\n${fields}`);
+    assert.equal(diagnostics[0].severity, "info");
+  }
+});
+
+test("skill metadata parses supported plain, quoted, and indicator block strings", () => {
+  const metadataRule = ruleById(skillSafetyRules, "skill-safety/has-metadata");
+  const triggerRule = ruleById(skillSafetyRules, "skill-safety/skill-description-when-to-use");
+  const validFields = [
+    "name: metadata\ndescription: Create release notes",
+    'name: "metadata"\ndescription: "Create release notes"',
+    "name: 'metadata'\ndescription: 'Create release notes'",
+    "name: metadata\ndescription: |2\n  Create release notes",
+    "name: metadata\ndescription: >-2\n  Summarize incident timelines",
+    "name: metadata\ndescription: | # revised 2026\n Create release notes",
+  ];
+
+  for (const fields of validFields) {
+    const file = fixture("/workspace", "skills/metadata/SKILL.md", `---\n${fields}\n---`);
+    assertRuleOutput(metadataRule, [file], []);
+    assertRuleOutput(triggerRule, [file], []);
+  }
+});
+
 test("blocked dangerous-command examples", () => {
   const rule = ruleById(skillSafetyRules, "skill-safety/dangerous-commands");
   const content = "---\nname: examples\ndescription: Use when reviewing blocked commands.\n---\nBlocked example: do not execute rm -rf /.";
@@ -254,6 +325,14 @@ test("dangerous-command context crosses delimiters without reading adjacent code
     [
       "the word blocked on an adjacent code line",
       "```bash\necho blocked\nrm -rf /\n```",
+      "error",
+    ],
+    ["blocked assignment on the command line", "blocked=false; rm -rf /", "error"],
+    ["adjacent unfenced blocked assignment", "blocked=false\nrm -rf /", "error"],
+    ["adjacent unfenced code containing blocked", "echo blocked\nrm -rf /", "error"],
+    [
+      "non-adjacent blocked prose",
+      "Blocked example: do not execute this command.\n\nrm -rf /",
       "error",
     ],
     ["a tilde text fence", "~~~text\nrm -rf /\n~~~", "info"],
