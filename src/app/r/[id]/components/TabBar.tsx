@@ -13,12 +13,12 @@ const TABS = [
 export default function TabBar({
   activeTab,
   setActiveTab,
-  diagnosticCount,
+  reportDiagnosticCount,
   score,
 }: {
   activeTab: string;
   setActiveTab: (tab: string) => void;
-  diagnosticCount: number;
+  reportDiagnosticCount: number;
   score: number;
 }) {
   const tier = getTier(score);
@@ -53,9 +53,9 @@ export default function TabBar({
                   style={isActive ? { color: tier.color } : { opacity: 0.35 }}
                 />
                 {tab.label}
-                {tab.id === "diagnostics" && diagnosticCount > 0 && (
+                {tab.id === "diagnostics" && reportDiagnosticCount > 0 && (
                   <span className="ml-1 text-[11px] mono px-1.5 py-0.5 rounded-full bg-[var(--red)]/20 text-[var(--red)]">
-                    {diagnosticCount}
+                    {reportDiagnosticCount}
                   </span>
                 )}
               </button>

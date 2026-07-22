@@ -2,7 +2,8 @@ import { notFound } from "next/navigation";
 
 import { gradeFor } from "@/lib/grade";
 import { listReports, readReport } from "@/lib/localStore";
-import { adaptStoredReport, metadataDiagnosticCount } from "@/lib/reportAdapter";
+import { adaptStoredReport } from "@/lib/reportAdapter";
+import { diagnosticMetadataCopy } from "@/lib/reportViewModel";
 import ReportClientLoader from "./ReportClientLoader";
 import type { ReportData } from "./types";
 
@@ -25,14 +26,14 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   if (!data) return { title: "Report Not Found — AgentLinter" };
 
   const grade = data.legacy ? gradeFor(data.totalScore) : data.grade;
-  const diagnosticsCount = metadataDiagnosticCount(data);
+  const diagnosticsCopy = diagnosticMetadataCopy(data);
 
   return {
     title: `${data.totalScore}/100 (${grade}) — AgentLinter Report`,
-    description: `Agent workspace scored ${data.totalScore}/100 — ${data.filesScanned} files scanned, ${diagnosticsCount} issues found.`,
+    description: `Heuristic score ${data.totalScore}/100 — ${data.filesScanned} files analyzed, ${diagnosticsCopy}.`,
     openGraph: {
       title: `${data.totalScore}/100 (${grade}) — AgentLinter Report`,
-      description: `Agent workspace scored ${data.totalScore}/100. ${data.filesScanned} files, ${diagnosticsCount} issues.`,
+      description: `Heuristic score ${data.totalScore}/100. ${data.filesScanned} files, ${diagnosticsCopy}.`,
     },
     twitter: {
       card: "summary",

@@ -4,24 +4,28 @@ import {
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
-  Sparkles,
-  Copy,
-  Zap,
-  Lock,
-  Layers,
-  Eye,
-  Puzzle,
-  Shield,
-  Scale,
-  Target,
-  FileText,
   ChevronRight,
+  Copy,
+  Eye,
+  FileText,
+  Info,
+  Layers,
+  Puzzle,
+  Scale,
+  Shield,
+  Target,
 } from "lucide-react";
-import { useState, type CSSProperties } from "react";
+import type { CSSProperties } from "react";
+
+import {
+  countedSeverity,
+  reportProvenance,
+  severityStats,
+} from "@/lib/reportViewModel";
+import type { Severity } from "@/lib/localStore";
 import type { ReportData } from "../types";
 import { getTier } from "../utils/getTier";
-import { CATEGORY_META } from "../constants/category-meta";
-import Histogram from "./Histogram";
+import { useCopyReportLink } from "./useCopyReportLink";
 
 function CategoryIcon({ name, className, style }: { name: string; className?: string; style?: CSSProperties }) {
   const cn = className || "w-4 h-4";
@@ -36,6 +40,13 @@ function CategoryIcon({ name, className, style }: { name: string; className?: st
   }
 }
 
+const SEVERITY_STYLE: Record<Severity, { color: string; borderColor: string }> = {
+  critical: { color: "var(--red)", borderColor: "rgba(248, 113, 113, 0.25)" },
+  error: { color: "#fb7185", borderColor: "rgba(251, 113, 133, 0.22)" },
+  warning: { color: "var(--amber)", borderColor: "rgba(251, 191, 36, 0.22)" },
+  info: { color: "var(--text-secondary)", borderColor: "rgba(255, 255, 255, 0.12)" },
+};
+
 export default function OverviewTab({
   data,
   onTabChange,
@@ -44,81 +55,19 @@ export default function OverviewTab({
   onTabChange: (tab: string) => void;
 }) {
   const tier = getTier(data.totalScore);
-  const [copied, setCopied] = useState(false);
-
-  const totalRules = Object.values(CATEGORY_META).reduce((sum, c) => sum + c.rules.length, 0);
-  const failedRuleIds = new Set(
-    data.diagnostics.filter((d) => d.severity !== "info").map((d) => d.rule)
-  );
-  const passedRules = Math.max(0, totalRules - failedRuleIds.size);
-  const errors = data.diagnostics.filter((d) => d.severity === "critical" || d.severity === "error");
-  const warnings = data.diagnostics.filter((d) => d.severity === "warning");
-
-  const percentile = data.totalScore >= 98 ? 1 : data.totalScore >= 96 ? 3 : data.totalScore >= 93 ? 5 : data.totalScore >= 90 ? 8 : data.totalScore >= 85 ? 12 : data.totalScore >= 80 ? 18 : data.totalScore >= 75 ? 25 : data.totalScore >= 68 ? 35 : 50;
-
-  // Token efficiency
-  const tokenBudgetDiags = data.diagnostics.filter((d) => d.rule === "clarity/token-budget-range");
-  const tokenFiles: { tokens: number; grade: string }[] = tokenBudgetDiags
-    .map((d) => {
-      const tokMatch = d.message?.match(/~([\d,]+)\s*estimated tokens/);
-      const gradeMatch = d.message?.match(/Grade\s+([A-D])/);
-      if (!tokMatch) return null;
-      return { tokens: parseInt(tokMatch[1].replace(/,/g, ""), 10), grade: gradeMatch?.[1] || "?" };
-    })
-    .filter(Boolean) as { tokens: number; grade: string }[];
-  const totalTokens = tokenFiles.reduce((s, f) => s + f.tokens, 0);
-  const gradeOrder = ["A", "B", "C", "D"];
-  const avgGradeIdx = tokenFiles.length > 0
-    ? Math.round(tokenFiles.reduce((s, f) => s + gradeOrder.indexOf(f.grade), 0) / tokenFiles.length)
-    : 0;
-  const avgGrade = tokenFiles.length > 0 ? gradeOrder[Math.min(avgGradeIdx, 3)] : null;
-  const potentialSavings = tokenFiles.length > 0
-    ? Math.round(
-        tokenFiles.reduce((s, f) => {
-          if (f.grade === "B") return s + f.tokens * 0.3;
-          if (f.grade === "C") return s + f.tokens * 0.5;
-          if (f.grade === "D") return s + f.tokens * 0.6;
-          return s;
-        }, 0) / Math.max(totalTokens, 1) * 100
-      )
-    : 0;
-
-  const shareText = `\u{1F9EC} AgentLinter Score: ${data.totalScore}/100\n\n\u2B50 ${tier.grade} tier \u00B7 Top ${percentile}%\n\nIs YOUR AI agent secure?\nFree & open source \u2014 try it yourself:\n\nnpx agentlinter\n\nhttps://agentlinter.com`;
-  const statCards = [
-    {
-      label: "criticals",
-      count: errors.length,
-      color: "var(--red)",
-      borderColor: errors.length > 0 ? "rgba(248, 113, 113, 0.2)" : "rgba(52, 211, 153, 0.2)",
-      Icon: errors.length > 0 ? AlertCircle : CheckCircle2,
-      value: errors.length > 0 ? String(errors.length) : "\u2713",
-    },
-    {
-      label: "warnings",
-      count: warnings.length,
-      color: warnings.length > 0 ? "var(--amber)" : "var(--green)",
-      borderColor: warnings.length > 0 ? "rgba(251, 191, 36, 0.2)" : "rgba(52, 211, 153, 0.2)",
-      Icon: warnings.length > 0 ? AlertTriangle : CheckCircle2,
-      value: warnings.length > 0 ? String(warnings.length) : "\u2713",
-    },
-    {
-      label: "passed rules",
-      count: passedRules,
-      color: "var(--green)",
-      borderColor: "rgba(52, 211, 153, 0.2)",
-      Icon: CheckCircle2,
-      value: String(passedRules),
-    },
-  ] as const;
+  const provenance = reportProvenance(data);
+  const { copyState, copyReportLink } = useCopyReportLink();
 
   return (
     <div className="space-y-8 sm:space-y-10">
-      {/* Score Hero */}
       <div className="text-center">
         <div
           className="inline-flex flex-col items-center rounded-[2rem] px-6 py-4 sm:px-10 sm:py-6"
           style={{ filter: `drop-shadow(0 0 40px ${tier.color}40)` }}
         >
+          <span className="mb-2 text-[11px] mono uppercase tracking-widest text-[var(--text-dim)]">
+            Heuristic score
+          </span>
           <div className="flex items-start justify-center leading-none">
             <span
               className="text-[96px] sm:text-[128px] font-black leading-none display"
@@ -132,179 +81,134 @@ export default function OverviewTab({
             </span>
             <span className="mt-4 text-[48px] sm:text-[64px] font-light text-white/30 align-top">/100</span>
           </div>
-          <div className="mt-3 flex items-center gap-3">
-            <div
-              className="px-6 py-2 rounded-2xl text-[32px] sm:text-[40px] font-bold mono"
-              style={{ color: tier.color, backgroundColor: tier.bg }}
-            >
-              {tier.grade}
-            </div>
+          <div
+            className="mt-3 px-6 py-2 rounded-2xl text-[32px] sm:text-[40px] font-bold mono"
+            style={{ color: tier.color, backgroundColor: tier.bg }}
+          >
+            {data.grade}
           </div>
-          <span className="mt-3 text-[11px] mono uppercase tracking-widest text-[var(--text-dim)]">
-            TOP {percentile}%
-          </span>
-          <span className="mt-1 text-[18px] sm:text-[20px] font-medium" style={{ color: tier.color }}>
-            {tier.label}
-          </span>
         </div>
       </div>
 
-      {/* Quick Stats */}
-      <div className="grid grid-cols-3 gap-4">
-        {statCards.map(({ label, color, borderColor, Icon, value }) => (
-          <div
-            key={label}
-            className="cursor-default rounded-xl border bg-[var(--bg-card)] p-4 text-center transition-colors hover:bg-white/5 sm:p-5"
-            style={{ borderColor }}
-          >
-            <Icon className="mx-auto h-5 w-5" style={{ color }} />
-            <div className="mt-3 text-[40px] sm:text-[48px] font-black mono leading-none" style={{ color }}>
-              {value}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
+        {severityStats(data).map(({ severity, count }) => {
+          const Icon = severity === "critical"
+            ? AlertCircle
+            : severity === "error" || severity === "warning"
+              ? AlertTriangle
+              : Info;
+          const style = SEVERITY_STYLE[severity];
+          return (
+            <div
+              key={severity}
+              className="rounded-xl border bg-[var(--bg-card)] p-4 text-center"
+              style={{ borderColor: style.borderColor }}
+            >
+              <Icon className="mx-auto h-5 w-5" style={{ color: style.color }} />
+              <div className="mt-3 text-[36px] font-black mono leading-none" style={{ color: style.color }}>
+                {count}
+              </div>
+              <div className="mt-2 text-[13px] text-[var(--text-dim)]">
+                {countedSeverity(count, severity)}
+              </div>
             </div>
-            <div className="mt-2 text-[13px] sm:text-[14px] text-[var(--text-dim)]">{label}</div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      {/* Category Bars */}
+      {!data.legacy && (
+        <div className="rounded-xl border border-[var(--accent-dim)] bg-[var(--accent-glow)] p-5 text-[13px] text-[var(--text-secondary)]">
+          <p>{data.scoringPolicy.disclaimer}</p>
+          <p className="mt-2 mono text-[12px] text-[var(--text-dim)]">
+            {data.ruleSummary.evaluated} evaluated · {data.ruleSummary.flagged} flagged · {data.ruleSummary.passed} passed
+          </p>
+        </div>
+      )}
+
+      {data.legacy && (
+        <div className="rounded-xl border border-[var(--amber)]/25 bg-[var(--amber)]/5 p-5">
+          <p className="font-medium text-[var(--amber)]">Legacy Report metadata unavailable</p>
+          <p className="mt-2 text-[13px] text-[var(--text-secondary)]">
+            Engine catalog, scoring policy, and scan provenance were not recorded. Some malformed historic diagnostic payloads may not be renderable.
+          </p>
+        </div>
+      )}
+
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6">
         <div className="space-y-1">
-          {data.categories.map((cat) => {
-            const catTier = getTier(cat.score);
-            const meta = CATEGORY_META[cat.name];
-            if (!meta) return null;
+          {data.categories.map((category) => {
+            const categoryTier = getTier(category.score);
             return (
-              <div
-                key={cat.name}
+              <button
+                type="button"
+                key={category.name}
                 onClick={() => onTabChange("categories")}
-                className="flex items-center gap-4 h-12 cursor-pointer hover:bg-white/5 rounded-lg px-2 transition-colors"
+                className="flex w-full items-center gap-4 h-12 hover:bg-white/5 rounded-lg px-2 text-left transition-colors"
               >
                 <div className="flex items-center gap-2 w-[130px]">
-                  <CategoryIcon name={cat.name} className="w-4 h-4" style={{ color: `${catTier.color}80` }} />
-                  <span className="text-[15px] sm:text-[16px] font-medium text-[var(--text-secondary)] truncate">
-                    {cat.name}
+                  <CategoryIcon name={category.name} className="w-4 h-4" style={{ color: `${categoryTier.color}80` }} />
+                  <span className="truncate text-[15px] font-medium text-[var(--text-secondary)] sm:text-[16px]">
+                    {category.name}
                   </span>
                 </div>
                 <div className="flex-1 h-3 rounded-full overflow-hidden bg-white/[0.06]">
-                  <div
-                    className={`h-full rounded-full transition-all duration-700 ease-out ${cat.score === 100 ? "animate-pulse-once" : ""}`}
-                    style={{ backgroundColor: catTier.color, width: `${cat.score}%` }}
-                  />
+                  <div className="h-full rounded-full" style={{ backgroundColor: categoryTier.color, width: `${category.score}%` }} />
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-[22px] sm:text-[24px] font-bold mono w-[50px] text-right" style={{ color: catTier.color }}>
-                    {cat.score}
-                  </span>
-                  <span
-                    className="text-[11px] mono px-2 py-0.5 rounded"
-                    style={{ color: catTier.color, backgroundColor: catTier.bg }}
-                  >
-                    {catTier.grade}
-                  </span>
-                  <ChevronRight className="h-3.5 w-3.5 text-[var(--text-dim)]" />
-                </div>
-              </div>
+                <span className="w-[50px] text-right text-[22px] font-bold mono sm:text-[24px]" style={{ color: categoryTier.color }}>
+                  {category.score}
+                </span>
+                <ChevronRight className="h-3.5 w-3.5 text-[var(--text-dim)]" />
+              </button>
             );
           })}
         </div>
       </div>
 
-      {/* Token Efficiency */}
-      {tokenFiles.length > 0 && (
-        <div className="rounded-xl border border-[var(--green)]/20 bg-[var(--green)]/5 p-5 sm:p-6">
-          <div className="text-[13px] font-medium text-[var(--green)] mb-3 flex items-center gap-2">
-            <Zap className="w-4 h-4" />
-            Token Efficiency
-          </div>
-          <div className="flex flex-wrap gap-x-8 gap-y-2">
-            <span>
-              <span className="text-[24px] font-bold mono text-[var(--green)]">{totalTokens.toLocaleString()}</span>{" "}
-              <span className="text-[13px] text-[var(--green)]/70">total tokens</span>
-            </span>
-            <span>
-              <span className="text-[24px] font-bold mono text-[var(--green)]">{avgGrade}</span>{" "}
-              <span className="text-[13px] text-[var(--green)]/70">avg grade</span>
-            </span>
-            {potentialSavings > 0 && (
-              <span>
-                <span className="text-[24px] font-bold mono text-[var(--green)]">~{potentialSavings}%</span>{" "}
-                <span className="text-[13px] text-[var(--green)]/70">potential savings</span>
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Primary CTA: Fix with AI */}
-      {data.diagnostics.length > 0 && (
-        <button
-          onClick={() => {
-            navigator.clipboard.writeText(window.location.href);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-          }}
-          className="w-full rounded-xl bg-gradient-to-r from-[var(--accent)] to-[#7c3aed] p-5 sm:p-6 flex items-center gap-4 text-left hover:brightness-110 transition-all hover:scale-[1.01] active:scale-[0.99]"
-        >
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/20">
-            <Sparkles className="h-6 w-6 text-white" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-[16px] font-semibold text-white">Fix issues with your AI agent</div>
-            <div className="text-[13px] text-white/70 mt-0.5">Copy this report link and paste it to Claude, ChatGPT, or your favorite AI</div>
-          </div>
-          <div className="shrink-0 inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-[14px] font-semibold text-[var(--accent)]">
-            <Copy className="w-4 h-4" />
-            {copied ? "Copied!" : "Copy Link"}
-          </div>
-        </button>
-      )}
-
-      {/* Secondary CTA: Share on X */}
-      <a
-        href={`https://x.com/intent/tweet?text=${encodeURIComponent(shareText)}`}
-        target="_blank"
-        className="block rounded-xl border border-transparent bg-gradient-to-r from-[#1d9bf0]/20 to-transparent p-px"
+      <button
+        type="button"
+        onClick={() => void copyReportLink()}
+        className="flex w-full items-center gap-4 rounded-xl border border-[var(--accent-dim)] bg-[var(--bg-card)] p-5 text-left transition-colors hover:bg-white/5"
       >
-        <div className="flex items-center gap-3 rounded-xl bg-[var(--bg-card)] p-4 transition-all hover:bg-[#1d9bf0]/[0.08]">
-          <svg className="w-5 h-5 text-[#1d9bf0] shrink-0" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-          </svg>
-          <span className="text-[15px] font-medium text-[#1d9bf0] flex-1">Share your score on X</span>
-          <span className="shrink-0 rounded-lg bg-[#1d9bf0] px-3 py-1.5 text-[14px] font-medium text-white">
-            Post on X
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--accent-glow)]">
+          {copyState === "copied" ? <CheckCircle2 className="h-5 w-5 text-[var(--green)]" /> : <Copy className="h-5 w-5 text-[var(--accent)]" />}
+        </span>
+        <span className="flex-1">
+          <span className="block text-[16px] font-semibold">Copy Report link</span>
+          <span className="mt-0.5 block text-[13px] text-[var(--text-secondary)]">
+            {copyState === "copied" ? "Copied" : copyState === "failed" ? "Clipboard unavailable" : "Copy this Report URL"}
           </span>
-        </div>
-      </a>
+        </span>
+      </button>
 
-      {/* Score Distribution */}
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5 sm:p-6">
-        <h3 className="mb-4 text-[13px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">Score Distribution</h3>
-        <div className="flex items-center justify-between mb-4">
-          <span className="text-[14px] text-[var(--text-secondary)]">Where you stand among all scanned workspaces</span>
-          <span className="text-[13px] mono" style={{ color: tier.color }}>Top {percentile}%</span>
+      {provenance && (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5 sm:p-6">
+          <h3 className="text-[16px] font-semibold">Report provenance</h3>
+          <div className="mt-4 grid grid-cols-2 gap-3 text-[13px] sm:grid-cols-4">
+            <span>Engine {provenance.engineVersion}</span>
+            <span>Schema {provenance.schemaVersion}</span>
+            <span>Context {provenance.context}</span>
+            <span>Scan policy {provenance.scanPolicyVersion}</span>
+            <span>{provenance.discovered} discovered</span>
+            <span>{provenance.analyzed} analyzed</span>
+            <span>{provenance.generatedWorktreeIgnoreCount} generated worktree ignored</span>
+            <span>{provenance.aliasCount} alias{provenance.aliasCount === 1 ? "" : "es"}</span>
+          </div>
+          <div className="mt-5 space-y-3 text-[13px] text-[var(--text-secondary)]">
+            <div>
+              <div className="mb-1 font-medium text-[var(--text)]">Ignored entries ({provenance.ignored.length})</div>
+              {provenance.ignored.length === 0 ? <p>None recorded</p> : provenance.ignored.map((entry) => (
+                <p key={`${entry.logicalPath}:${entry.reason}`} className="mono">{entry.logicalPath} · {entry.reason}</p>
+              ))}
+            </div>
+            <div>
+              <div className="mb-1 font-medium text-[var(--text)]">Aliases ({provenance.aliasCount})</div>
+              {provenance.aliases.length === 0 ? <p>None recorded</p> : provenance.aliases.map((alias) => (
+                <p key={`${alias.logicalPath}:${alias.canonicalPath}`} className="mono">{alias.logicalPath} -&gt; {alias.canonicalPath}</p>
+              ))}
+            </div>
+          </div>
         </div>
-        <Histogram userScore={data.totalScore} />
-        <div className="mt-4 grid grid-cols-3 gap-3 text-center">
-          <div className="rounded-lg bg-white/[0.05] p-3">
-            <div className="text-[11px] mono text-[var(--text-dim)] mb-1">Median</div>
-            <div className="text-[18px] font-bold mono text-[var(--text-secondary)]">64</div>
-          </div>
-          <div className="rounded-lg p-3" style={{ backgroundColor: tier.bg, boxShadow: `0 0 20px ${tier.color}30` }}>
-            <div className="text-[11px] mono text-[var(--text-dim)] mb-1">Your Score</div>
-            <div className="text-[18px] font-bold mono" style={{ color: tier.color }}>{data.totalScore}</div>
-          </div>
-          <div className="rounded-lg bg-white/[0.05] p-3">
-            <div className="text-[11px] mono text-[var(--text-dim)] mb-1">Top 1%</div>
-            <div className="text-[18px] font-bold mono text-[var(--text-secondary)]">98+</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Privacy Note */}
-      <div className="flex items-center gap-2 text-[13px] text-[var(--teal)] justify-center">
-        <Lock className="w-3.5 h-3.5" />
-        <span>Results only \u2014 your files never uploaded</span>
-      </div>
+      )}
     </div>
   );
 }
