@@ -39,11 +39,11 @@ function extractJSON(stdout: string): unknown {
 }
 
 function appendScoreLog(r: StoredReportV2): void {
-  const crit = r.severityCounts.critical;
-  const warn = r.severityCounts.warning;
+  const counts = r.severityCounts;
   const home = os.homedir();
   const shownWs = (r.workspace.startsWith(home) ? r.workspace.replace(home, "~") : r.workspace).replaceAll("|", "\\|");
-  const row = `| ${r.created_at.slice(0, 10)} | \`${shownWs}\` | ${r.score} | ${r.grade} | ${crit} | ${warn} | \`reports/${r.id}.json\` |`;
+  const shownEngine = r.engineVersion.replaceAll("|", "\\|");
+  const row = `| ${r.created_at.slice(0, 10)} | \`${shownWs}\` | ${r.score} | ${r.grade} | ${counts.critical} | ${counts.error} | ${counts.warning} | ${counts.info} | ${shownEngine} | \`reports/${r.id}.json\` |`;
   // execFile with an args array: no shell, so backticks in the row are inert.
   execFile(OBSIDIAN_CLI, ["append", SCORE_LOG, "-m", row], (err) => {
     if (err) console.error("score-log append failed (run still stored):", err.message);
