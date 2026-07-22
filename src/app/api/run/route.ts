@@ -9,9 +9,13 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { nanoid } from "nanoid";
-import { writeReport, type StoredReport } from "@/lib/localStore";
-import { gradeFor } from "@/lib/grade";
-import { sanitizeDiagnostics } from "@/lib/sanitizeDiagnostics";
+import {
+  buildStoredReportV2,
+  parseCliReportV2,
+  REPORT_SCHEMA_ERROR,
+  writeReport,
+  type StoredReportV2,
+} from "@/lib/localStore";
 import { isSameOrigin } from "@/lib/sameOrigin";
 
 const pExecFile = promisify(execFile);
@@ -23,26 +27,23 @@ const SCORE_LOG = "30 Tools-Models/Doc Sets/AgentLinter/AgentLinter Score Log.md
 
 let running = false; // one Run at a time
 
-function extractJSON(stdout: string): {
-  score: number;
-  categories: { name: string; score: number; weight: number }[];
-  diagnostics: { severity: string; rule: string }[] & unknown[];
-  files: string[];
-  timestamp: string;
-} {
+function extractJSON(stdout: string): unknown {
   const start = stdout.indexOf("{");
   const end = stdout.lastIndexOf("}");
-  if (start === -1 || end <= start) throw new Error("No JSON object in CLI output");
-  return JSON.parse(stdout.slice(start, end + 1));
+  if (start === -1 || end <= start) throw new Error(REPORT_SCHEMA_ERROR);
+  try {
+    return JSON.parse(stdout.slice(start, end + 1));
+  } catch {
+    throw new Error(REPORT_SCHEMA_ERROR);
+  }
 }
 
-function appendScoreLog(r: StoredReport): void {
-  const diags = r.diagnostics as { severity?: string }[];
-  const crit = diags.filter((d) => d?.severity === "critical").length;
-  const warn = diags.filter((d) => d?.severity === "warning").length;
+function appendScoreLog(r: StoredReportV2): void {
+  const crit = r.severityCounts.critical;
+  const warn = r.severityCounts.warning;
   const home = os.homedir();
   const shownWs = (r.workspace.startsWith(home) ? r.workspace.replace(home, "~") : r.workspace).replaceAll("|", "\\|");
-  const row = `| ${r.created_at.slice(0, 10)} | \`${shownWs}\` | ${r.score} | ${gradeFor(r.score)} | ${crit} | ${warn} | \`reports/${r.id}.json\` |`;
+  const row = `| ${r.created_at.slice(0, 10)} | \`${shownWs}\` | ${r.score} | ${r.grade} | ${crit} | ${warn} | \`reports/${r.id}.json\` |`;
   // execFile with an args array: no shell, so backticks in the row are inert.
   execFile(OBSIDIAN_CLI, ["append", SCORE_LOG, "-m", row], (err) => {
     if (err) console.error("score-log append failed (run still stored):", err.message);
@@ -75,22 +76,18 @@ export async function POST(req: NextRequest) {
       [CLI, workspace, "--local", "--json", "--no-audit"],
       { timeout: 180_000, maxBuffer: 32 * 1024 * 1024 }
     );
-    const cli = extractJSON(stdout);
-    const report: StoredReport = {
-      id: nanoid(12),
-      workspace,
-      machine_id: crypto.createHash("sha256").update(`${os.hostname()}-${os.userInfo().username}`).digest("hex").slice(0, 32),
-      score: cli.score,
-      categories: cli.categories.map((c) => ({ name: c.name, score: c.score, weight: c.weight })),
-      diagnostics: sanitizeDiagnostics(cli.diagnostics),
-      file_names: cli.files,
-      files_scanned: cli.files.length,
-      rules_checked: new Set((cli.diagnostics as { rule: string }[]).map((d) => d.rule)).size,
-      created_at: new Date().toISOString(),
-    };
+    const cli = parseCliReportV2(extractJSON(stdout));
+    const report: StoredReportV2 = buildStoredReportV2({
+      cli,
+      localMetadata: {
+        id: nanoid(12),
+        workspace,
+        machine_id: crypto.createHash("sha256").update(`${os.hostname()}-${os.userInfo().username}`).digest("hex").slice(0, 32),
+      },
+    });
     writeReport(report);
     appendScoreLog(report);
-    return NextResponse.json({ id: report.id, url: `/r/${report.id}`, score: report.score, grade: gradeFor(report.score) });
+    return NextResponse.json({ id: report.id, url: `/r/${report.id}`, score: report.score, grade: report.grade });
   } catch (e) {
     console.error("run failed:", e);
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
