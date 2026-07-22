@@ -2,21 +2,49 @@
 
 import { Rule, Diagnostic } from "../types";
 
-const HOOKS_DOCS_URL = "https://docs.anthropic.com/en/docs/claude-code/hooks";
+const HOOKS_DOCS_URL = "https://code.claude.com/docs/en/hooks";
 
 const VALID_EVENTS = [
+  "SessionStart",
+  "Setup",
+  "UserPromptSubmit",
+  "UserPromptExpansion",
   "PreToolUse",
+  "PermissionRequest",
+  "PermissionDenied",
   "PostToolUse",
-  "Stop",
-  "SubagentStop",
+  "PostToolUseFailure",
+  "PostToolBatch",
   "Notification",
+  "MessageDisplay",
+  "SubagentStart",
+  "SubagentStop",
+  "TaskCreated",
+  "TaskCompleted",
+  "Stop",
+  "StopFailure",
+  "TeammateIdle",
+  "InstructionsLoaded",
+  "ConfigChange",
+  "CwdChanged",
+  "FileChanged",
+  "WorktreeCreate",
+  "WorktreeRemove",
+  "PreCompact",
+  "PostCompact",
+  "Elicitation",
+  "ElicitationResult",
+  "SessionEnd",
 ];
 
 type HookHandler = {
-  type: "command" | "prompt" | "agent" | "http";
+  type: "command" | "prompt" | "agent" | "http" | "mcp_tool";
   command?: string;
   prompt?: string;
   url?: string;
+  server?: string;
+  tool?: string;
+  input?: Record<string, unknown>;
 };
 
 type HookGroup = {
@@ -28,7 +56,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function requiredHandlerField(type: HookHandler["type"]): keyof HookHandler {
+function requiredHandlerField(type: Exclude<HookHandler["type"], "mcp_tool">): keyof HookHandler {
   if (type === "command") return "command";
   if (type === "http") return "url";
   return "prompt";
@@ -38,17 +66,32 @@ function validateHookGroup(group: unknown): string | null {
   if (!isRecord(group)) return "Hook matcher group must be an object";
 
   const candidate = group as Partial<HookGroup>;
+  if (candidate.matcher !== undefined && typeof candidate.matcher !== "string") {
+    return 'Hook matcher group "matcher" must be a string when present';
+  }
   if (!Array.isArray(candidate.hooks) || candidate.hooks.length === 0) {
     return 'Hook matcher group must contain a non-empty "hooks" array';
   }
 
   for (const handler of candidate.hooks) {
     if (!isRecord(handler)) return "Nested hook handler must be an object";
-    if (!["command", "prompt", "agent", "http"].includes(String(handler.type))) {
-      return 'Nested hook handler must have type "command", "prompt", "agent", or "http"';
+    if (!["command", "prompt", "agent", "http", "mcp_tool"].includes(String(handler.type))) {
+      return 'Nested hook handler must have type "command", "prompt", "agent", "http", or "mcp_tool"';
     }
 
     const type = handler.type as HookHandler["type"];
+    if (type === "mcp_tool") {
+      for (const field of ["server", "tool"] as const) {
+        if (typeof handler[field] !== "string" || !handler[field].trim()) {
+          return `Nested mcp_tool hook handler is missing required "${field}" field`;
+        }
+      }
+      if (handler.input !== undefined && !isRecord(handler.input)) {
+        return 'Nested mcp_tool hook handler "input" must be an object when present';
+      }
+      continue;
+    }
+
     const requiredField = requiredHandlerField(type);
     if (typeof handler[requiredField] !== "string" || !handler[requiredField].trim()) {
       return `Nested ${type} hook handler is missing required "${requiredField}" field`;
@@ -123,7 +166,7 @@ export const hooksStructureRules: Rule[] = [
                     rule: "claude-code/hooks-structure",
                     file: file.name,
                     message: `${issue} for hook event "${eventName}"`,
-                    fix: "Use a matcher group with valid nested command, prompt, agent, or http handlers",
+                    fix: "Use a matcher group with valid nested command, prompt, agent, http, or mcp_tool handlers",
                   });
                 }
               }

@@ -45,61 +45,166 @@ function isSecuritySkill(file: { name: string; content: string }): boolean {
   );
 }
 
-function extractDescription(frontmatter: string): string | null {
-  // Case 1: YAML multiline block (> or |)
-  const multilineMatch = frontmatter.match(/^description:\s*[>|]-?\s*\n((?:[ \t]+.+\n?)+)/m);
-  if (multilineMatch) return multilineMatch[1].replace(/\n[ \t]+/g, ' ').trim();
+function extractYamlString(frontmatter: string, field: string): string | null {
+  const lines = frontmatter.split("\n");
+  const fieldPattern = new RegExp(`^${field}:\\s*(.*)$`);
+  const fieldIndex = lines.findIndex((line) => fieldPattern.test(line));
+  if (fieldIndex === -1) return null;
 
-  // Case 2: Double-quoted string
-  const dqMatch = frontmatter.match(/^description:\s*"((?:[^"\\]|\\.)*)"/m);
-  if (dqMatch) return dqMatch[1].replace(/\\"/g, '"').trim();
+  const rawValue = lines[fieldIndex].match(fieldPattern)?.[1].trim() ?? "";
+  if (/^[>|][+-]?(?:\s+#.*)?$/.test(rawValue)) {
+    const blockLines: string[] = [];
+    for (let index = fieldIndex + 1; index < lines.length; index++) {
+      const line = lines[index];
+      if (line.trim() && !/^[ \t]/.test(line)) break;
+      blockLines.push(line.trim());
+    }
+    const value = blockLines.join(" ").trim();
+    return value || null;
+  }
 
-  // Case 3: Single-quoted string
-  const sqMatch = frontmatter.match(/^description:\s*'((?:[^'\\]|\\.)*)'/m);
-  if (sqMatch) return sqMatch[1].trim();
+  const doubleQuoted = rawValue.match(/^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/);
+  if (doubleQuoted) {
+    const value = doubleQuoted[1].replace(/\\"/g, '"').trim();
+    return value || null;
+  }
 
-  // Case 4: Plain string (allow apostrophes)
-  const plainMatch = frontmatter.match(/^description:\s*([^\n>|].+)/m);
-  if (plainMatch) return plainMatch[1].trim();
+  const singleQuoted = rawValue.match(/^'((?:[^']|'')*)'\s*(?:#.*)?$/);
+  if (singleQuoted) {
+    const value = singleQuoted[1].replace(/''/g, "'").trim();
+    return value || null;
+  }
 
-  return null;
+  if (!rawValue || rawValue.startsWith("#") || /^[\[{]/.test(rawValue)) return null;
+
+  const withoutComment = rawValue.replace(/\s+#.*$/, "").trim();
+  if (!withoutComment || /^(?:true|false|null|~|[-+]?\d+(?:\.\d+)?)$/i.test(withoutComment)) {
+    return null;
+  }
+  return withoutComment;
 }
 
-const CAPABILITY_LEADING_VERBS = /^(?:generate|review|query|transcribe|install|drive|build|audit|manage)\s+(?:an?\s+|the\s+)?(?!(?:it|things?|stuff|helpers?|something)\b)\S+/i;
+function extractDescription(frontmatter: string): string | null {
+  return extractYamlString(frontmatter, "description");
+}
+
+const NON_ACTION_STARTERS = new Set([
+  "a", "an", "the", "this", "that", "these", "those", "skill", "tool", "helper",
+  "assistant", "documentation", "instructions", "helpful",
+]);
+
+const NON_CONCRETE_WORDS = new Set([
+  "a", "an", "the", "it", "thing", "things", "stuff", "helper", "helpers", "something",
+  "anything", "task", "tasks", "needed", "necessary", "appropriate", "when",
+]);
+
+function hasConcreteObject(text: string): boolean {
+  const words = text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu) ?? [];
+  return words.some((word) => !NON_CONCRETE_WORDS.has(word));
+}
 
 function hasUsableTriggerDescription(description: string): boolean {
   const normalized = description.trim();
   if (!normalized) return false;
 
-  const hasExplicitTrigger =
-    /\b(?:when|whenever)\b/i.test(normalized) ||
-    /\buse\s+for\b/i.test(normalized) ||
-    /\btriggered\s+by\b/i.test(normalized) ||
-    /요청\s*시|사용\s*시|필요\s*시/i.test(normalized);
+  const explicitTrigger = normalized.match(
+    /\b(?:when(?:ever)?|use\s+for|triggered\s+by)\b\s*(.*)$/i,
+  );
+  if (explicitTrigger) return hasConcreteObject(explicitTrigger[1]);
+  if (/요청\s*시|사용\s*시|필요\s*시/i.test(normalized)) return true;
 
-  return hasExplicitTrigger || CAPABILITY_LEADING_VERBS.test(normalized);
+  const capability = normalized.match(/^([\p{L}][\p{L}'-]*)\s+(.+)$/u);
+  if (!capability || NON_ACTION_STARTERS.has(capability[1].toLowerCase())) return false;
+  return hasConcreteObject(capability[2]);
 }
 
 type CommandContext = "executable" | "blocked-example" | "reference";
 
 const BLOCKED_COMMAND_CONTEXT = /\b(?:block(?:ed)?|reject(?:ed|ion)?|forbidden|detection\s+pattern|negative\s+test|must\s+not\s+execute|do\s+not\s+execute)\b/i;
-const SHELL_FENCE_LANGUAGES = new Set(["sh", "bash", "zsh", "shell", "shellscript", "console", "terminal"]);
+const SHELL_FENCE_LANGUAGES = new Set([
+  "sh", "bash", "zsh", "fish", "pwsh", "powershell", "shell", "shellscript", "console", "terminal",
+]);
+
+type FenceContext = {
+  delimiter: boolean;
+  insideFence: boolean;
+  language: string | null;
+};
+
+function normalizeFenceLanguage(info: string): string | null {
+  const trimmed = info.trim();
+  if (!trimmed) return null;
+  const attributeLanguage = trimmed.match(/^\{[^}]*\.([\w-]+)/);
+  if (attributeLanguage) return attributeLanguage[1].toLowerCase();
+  return trimmed.split(/\s+/)[0].replace(/^\./, "").toLowerCase();
+}
+
+function parseFenceContexts(lines: string[]): FenceContext[] {
+  const contexts: FenceContext[] = [];
+  let activeFence: { marker: "`" | "~"; length: number; language: string | null } | null = null;
+
+  for (const line of lines) {
+    const fence = line.trim().match(/^(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      const marker = fence[1][0] as "`" | "~";
+      if (activeFence && marker === activeFence.marker && fence[1].length >= activeFence.length) {
+        contexts.push({ delimiter: true, insideFence: false, language: activeFence.language });
+        activeFence = null;
+        continue;
+      }
+      if (!activeFence) {
+        activeFence = {
+          marker,
+          length: fence[1].length,
+          language: normalizeFenceLanguage(fence[2]),
+        };
+        contexts.push({ delimiter: true, insideFence: false, language: activeFence.language });
+        continue;
+      }
+    }
+
+    contexts.push({
+      delimiter: false,
+      insideFence: activeFence !== null,
+      language: activeFence?.language ?? null,
+    });
+  }
+
+  return contexts;
+}
+
+function adjacentProse(
+  lines: string[],
+  contexts: FenceContext[],
+  lineIndex: number,
+  direction: -1 | 1,
+): string | null {
+  for (let index = lineIndex + direction; index >= 0 && index < lines.length; index += direction) {
+    if (contexts[index].delimiter || !lines[index].trim()) continue;
+    if (contexts[index].insideFence) return null;
+    return lines[index];
+  }
+  return null;
+}
 
 function classifyCommandContext(
   lines: string[],
+  contexts: FenceContext[],
   lineIndex: number,
-  fenceLanguage: string | null,
 ): CommandContext {
-  const adjacentContext = lines
-    .slice(Math.max(0, lineIndex - 1), Math.min(lines.length, lineIndex + 2))
-    .join(" ");
-  if (BLOCKED_COMMAND_CONTEXT.test(adjacentContext)) return "blocked-example";
-
   const line = lines[lineIndex];
   if (/^\s*(?:>|\|)/.test(line)) return "reference";
-  if (fenceLanguage && !SHELL_FENCE_LANGUAGES.has(fenceLanguage.toLowerCase())) {
+  const context = contexts[lineIndex];
+  if (context.insideFence && context.language && !SHELL_FENCE_LANGUAGES.has(context.language)) {
     return "reference";
   }
+
+  const prose = [
+    context.insideFence ? null : line,
+    adjacentProse(lines, contexts, lineIndex, -1),
+    adjacentProse(lines, contexts, lineIndex, 1),
+  ].filter((candidate): candidate is string => candidate !== null).join(" ");
+  if (BLOCKED_COMMAND_CONTEXT.test(prose)) return "blocked-example";
 
   return "executable";
 }
@@ -120,10 +225,8 @@ export const skillSafetyRules: Rule[] = [
         if (!file.content.startsWith("---")) continue;
 
         const frontmatter = file.content.split("---")[1] || "";
-        const nameMatch = frontmatter.match(/^name:\s*["']?([^\n"']+)["']?/m);
-        if (!nameMatch) continue; // missing name is caught by has-metadata
-
-        const declaredName = nameMatch[1].trim();
+        const declaredName = extractYamlString(frontmatter, "name");
+        if (!declaredName) continue; // missing/invalid name is caught by has-metadata
 
         // Extract parent dir name from path like "skills/weather/SKILL.md"
         const parts = file.name.split("/");
@@ -205,7 +308,7 @@ export const skillSafetyRules: Rule[] = [
         }
 
         const frontmatter = file.content.split("---")[1] || "";
-        if (!/^name:\s*\S+/m.test(frontmatter)) {
+        if (!extractYamlString(frontmatter, "name")) {
           diagnostics.push({
             severity: "info",
             category: "skillSafety",
@@ -240,18 +343,14 @@ export const skillSafetyRules: Rule[] = [
       const skillFiles = files.filter((f) => f.name.includes("skills/"));
 
       for (const file of skillFiles) {
-        let fenceLanguage: string | null = null;
+        const fenceContexts = parseFenceContexts(file.lines);
         for (let i = 0; i < file.lines.length; i++) {
           const line = file.lines[i];
-          const fenceMatch = line.trim().match(/^```\s*([^\s`]*)/);
-          if (fenceMatch) {
-            fenceLanguage = fenceLanguage === null ? (fenceMatch[1] || null) : null;
-            continue;
-          }
+          if (fenceContexts[i].delimiter) continue;
 
           for (const { pattern, name, severity } of DANGEROUS_EXEC_PATTERNS) {
             if (pattern.test(line)) {
-              const context = classifyCommandContext(file.lines, i, fenceLanguage);
+              const context = classifyCommandContext(file.lines, fenceContexts, i);
 
               diagnostics.push({
                 severity: context === "executable" ? severity : "info",
