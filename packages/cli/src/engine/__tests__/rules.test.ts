@@ -98,6 +98,13 @@ test("hook handler type must be a literal supported string", () => {
 
 test("current official Claude hook events and handler types", () => {
   const rule = ruleById(hooksStructureRules, "claude-code/hooks-structure");
+  type OfficialHookHandler =
+    | { type: "command"; command: string }
+    | { type: "http"; url: string }
+    | { type: "prompt"; prompt: string }
+    | { type: "agent"; prompt: string }
+    | { type: "mcp_tool"; server: string; tool: string; input?: Record<string, unknown> };
+  type OfficialHookGroup = { matcher?: string; hooks: OfficialHookHandler[] };
   const eventNames = [
     "SessionStart",
     "Setup",
@@ -130,11 +137,11 @@ test("current official Claude hook events and handler types", () => {
     "ElicitationResult",
     "SessionEnd",
   ];
-  const hooks = Object.fromEntries(
-    eventNames.map((eventName) => [
-      eventName,
-      [{ hooks: [{ type: "command", command: "echo ok" }] }],
-    ]),
+  const defaultHookGroup: OfficialHookGroup = {
+    hooks: [{ type: "command", command: "echo ok" }],
+  };
+  const hooks: Record<string, OfficialHookGroup[]> = Object.fromEntries(
+    eventNames.map((eventName) => [eventName, [defaultHookGroup]]),
   );
   hooks.SessionStart = [{
     matcher: "",
