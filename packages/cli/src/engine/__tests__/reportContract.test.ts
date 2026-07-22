@@ -3,7 +3,14 @@ import test from "node:test";
 import { formatJSON } from "../reporter";
 import { allRules } from "../rules";
 import { lint } from "../scorer";
-import { CATEGORY_LABELS, CATEGORY_WEIGHTS, type FileInfo, type ScanSummary, type Severity } from "../types";
+import {
+  CATEGORY_LABELS,
+  CATEGORY_WEIGHTS,
+  type FileInfo,
+  type RuleEvidence,
+  type ScanSummary,
+  type Severity,
+} from "../types";
 
 const scan: ScanSummary = {
   policyVersion: "2026-07-22",
@@ -47,6 +54,28 @@ const scoringPolicy = {
     "Skill Safety: +10 no skills; otherwise up to +10 frontmatter coverage and +5 description coverage",
     "Remote Ready: +5 each for workspace path, environment-variable docs, model setting, and Runtime section",
   ],
+};
+
+const RULE_EVIDENCE = new Set<RuleEvidence>([
+  "schema",
+  "invariant",
+  "security",
+  "empirical",
+  "advisory",
+]);
+
+const REQUIRED_EVIDENCE: Record<string, RuleEvidence> = {
+  "claude-code/hooks-structure": "schema",
+  "structure/dead-import": "schema",
+  "consistency/referenced-files-exist": "invariant",
+  "runtime/config-secrets": "security",
+  "security/no-secrets": "security",
+  "security/has-injection-defense": "security",
+  "security/prompt-injection-vulnerability": "security",
+  "security/no-injection-defense": "security",
+  "skill-safety/dangerous-commands": "security",
+  "skill-safety/data-exfiltration": "security",
+  "skill-safety/injection-vectors": "security",
 };
 
 function fixture(content: string): FileInfo {
@@ -119,15 +148,28 @@ test("serializes the schema-v2 Report contract with complete severity, scan, rul
     category: string;
     defaultSeverity: Severity;
     description: string;
-    evidence: string;
+    evidence: RuleEvidence;
     source?: { label: string; url: string; asOf: string };
   }>;
   const expectedRules = applicableRules();
   assert.ok(rules.length > 0, "Applicable rule catalog must not be empty");
+  const catalogProjection = rules.map(({ id, category, defaultSeverity, description, evidence }) => ({
+    id,
+    category,
+    defaultSeverity,
+    description,
+    evidence,
+  }));
   assert.deepStrictEqual(
-    rules.map(({ id, category, defaultSeverity, description }) => ({ id, category, defaultSeverity, description })),
+    catalogProjection.map(({ evidence: _, ...rule }) => rule),
     expectedRules.map(({ id, category, severity, description }) => ({ id, category, defaultSeverity: severity, description })),
   );
+  for (const rule of catalogProjection) {
+    assert.ok(RULE_EVIDENCE.has(rule.evidence), `${rule.id} must declare a valid evidence class`);
+  }
+  for (const [id, evidence] of Object.entries(REQUIRED_EVIDENCE)) {
+    assert.equal(rules.find((rule) => rule.id === id)?.evidence, evidence, `${id} evidence`);
+  }
   const hooksRule = expectedRules.find((rule) => rule.id === "claude-code/hooks-structure");
   assert.ok(hooksRule, "Expected hooks rule to be applicable to the universal fixture");
   const hooksCatalogEntry = rules.find((rule) => rule.id === "claude-code/hooks-structure");
@@ -152,7 +194,6 @@ test("serializes the schema-v2 Report contract with complete severity, scan, rul
     },
   );
   assert.ok(hooksCatalogEntry?.source?.label.trim(), "Hook provenance requires a non-empty source label");
-  assert.equal(rules.find((rule) => rule.id === "skill-safety/dangerous-commands")?.evidence, "security");
 
   const flagged = new Set(diagnostics.map((diagnostic) => diagnostic.rule));
   const ruleSummary = report.ruleSummary as { evaluated: number; flagged: number; passed: number };
