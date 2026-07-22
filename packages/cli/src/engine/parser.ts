@@ -79,11 +79,12 @@ class WorkspaceCollector {
   private readonly filesByIdentity = new Map<string, FileInfo>();
   private readonly canonicalByIdentity = new Map<string, string>();
   private readonly logicalCandidates = new Set<string>();
+  private readonly acceptedLogicalPaths = new Set<string>();
   private readonly aliases: ScanResult["summary"]["aliases"] = [];
   private readonly ignored: ScanResult["summary"]["ignored"] = [];
   private discovered = 0;
 
-  constructor(workspacePath: string, private readonly context: LintContext) {
+  constructor(workspacePath: string) {
     this.workspaceRoot = path.resolve(workspacePath);
     this.physicalWorkspaceRoot = fs.realpathSync.native(this.workspaceRoot);
   }
@@ -96,6 +97,21 @@ class WorkspaceCollector {
     if (!this.ignored.some((entry) => entry.logicalPath === logicalPath && entry.reason === reason)) {
       this.ignored.push({ logicalPath, reason });
     }
+  }
+
+  private recordRejectedCandidate(
+    logicalPath: string,
+    reason: ScanResult["summary"]["ignored"][number]["reason"],
+  ): void {
+    if (!this.logicalCandidates.has(logicalPath)) {
+      this.logicalCandidates.add(logicalPath);
+      this.discovered++;
+    }
+    this.recordIgnored(logicalPath, reason);
+  }
+
+  private canonicalLogicalPath(realPath: string): string {
+    return toLogicalPath(path.relative(this.physicalWorkspaceRoot, realPath));
   }
 
   private resolveInsideWorkspace(candidatePath: string, logicalPath: string): string | null {
@@ -114,21 +130,23 @@ class WorkspaceCollector {
   }
 
   canDescend(directoryPath: string, logicalPath: string): boolean {
-    if (this.isGeneratedWorktree(logicalPath)) {
-      if (!this.logicalCandidates.has(logicalPath)) {
-        this.logicalCandidates.add(logicalPath);
-        this.discovered++;
-      }
-      this.recordIgnored(logicalPath, "generated-worktree");
+    const normalizedLogicalPath = toLogicalPath(logicalPath);
+    if (this.isGeneratedWorktree(normalizedLogicalPath)) {
+      this.recordRejectedCandidate(normalizedLogicalPath, "generated-worktree");
       return false;
     }
 
-    const realPath = this.resolveInsideWorkspace(directoryPath, logicalPath);
+    const realPath = this.resolveInsideWorkspace(directoryPath, normalizedLogicalPath);
     if (!realPath) {
-      if (!this.logicalCandidates.has(logicalPath)) {
-        this.logicalCandidates.add(logicalPath);
+      if (!this.logicalCandidates.has(normalizedLogicalPath)) {
+        this.logicalCandidates.add(normalizedLogicalPath);
         this.discovered++;
       }
+      return false;
+    }
+
+    if (this.isGeneratedWorktree(this.canonicalLogicalPath(realPath))) {
+      this.recordRejectedCandidate(normalizedLogicalPath, "generated-worktree");
       return false;
     }
 
@@ -155,6 +173,12 @@ class WorkspaceCollector {
     const realPath = this.resolveInsideWorkspace(candidatePath, normalizedLogicalPath);
     if (!realPath) return;
 
+    const canonicalPath = this.canonicalLogicalPath(realPath);
+    if (this.isGeneratedWorktree(canonicalPath)) {
+      this.recordIgnored(normalizedLogicalPath, "generated-worktree");
+      return;
+    }
+
     let stat: fs.Stats;
     try {
       stat = fs.statSync(realPath);
@@ -162,6 +186,7 @@ class WorkspaceCollector {
       return;
     }
     if (!stat.isFile()) return;
+    this.acceptedLogicalPaths.add(normalizedLogicalPath);
 
     const identity = physicalIdentity(stat);
     const existingCanonicalPath = this.canonicalByIdentity.get(identity);
@@ -172,7 +197,6 @@ class WorkspaceCollector {
       return;
     }
 
-    const canonicalPath = toLogicalPath(path.relative(this.physicalWorkspaceRoot, realPath));
     const canonicalFilePath = path.join(this.workspaceRoot, canonicalPath);
     this.canonicalByIdentity.set(identity, canonicalPath);
     if (normalizedLogicalPath !== canonicalPath) {
@@ -180,12 +204,15 @@ class WorkspaceCollector {
     }
     this.filesByIdentity.set(
       identity,
-      parseFile(canonicalFilePath, canonicalPath, this.context, this.workspaceRoot, canonicalFilePath),
+      parseFile(canonicalFilePath, canonicalPath, "universal", this.workspaceRoot, canonicalFilePath),
     );
   }
 
   result(): ScanResult {
-    const files = [...this.filesByIdentity.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const context = detectContext([...this.acceptedLogicalPaths]);
+    const files = [...this.filesByIdentity.values()]
+      .map((file) => ({ ...file, context }))
+      .sort((a, b) => a.name.localeCompare(b.name));
     const aliases = [...this.aliases].sort(
       (a, b) => a.logicalPath.localeCompare(b.logicalPath) || a.canonicalPath.localeCompare(b.canonicalPath),
     );
@@ -208,19 +235,7 @@ class WorkspaceCollector {
  * Scan a workspace for agent configuration files and provenance.
  */
 export function scanWorkspaceDetailed(workspacePath: string): ScanResult {
-  const fileNames: string[] = [];
-
-  // First pass: collect file names for context detection
-  for (const fileName of AGENT_FILES) {
-    const filePath = path.join(workspacePath, fileName);
-    if (fs.existsSync(filePath)) {
-      fileNames.push(fileName);
-    }
-  }
-
-  // Detect context based on collected files
-  const context = detectContext(fileNames);
-  const collector = new WorkspaceCollector(workspacePath, context);
+  const collector = new WorkspaceCollector(workspacePath);
   const workspaceRoot = collector.workspaceRoot;
 
   // Second pass: parse files with context

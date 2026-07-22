@@ -87,7 +87,14 @@ export const importValidatorRules: Rule[] = [
 
       // Build import graph: filename -> set of imported filenames
       const graph = new Map<string, Set<string>>();
-      const analyzedFiles = new Set(files.map((file) => file.name));
+      const analyzedByCanonicalPath = new Map<string, string>();
+      for (const file of files) {
+        try {
+          analyzedByCanonicalPath.set(fs.realpathSync.native(file.canonicalPath || file.path), file.name);
+        } catch {
+          // Missing analyzed paths cannot participate in the on-disk import graph.
+        }
+      }
 
       for (const file of files) {
         const imports = new Set<string>();
@@ -103,7 +110,14 @@ export const importValidatorRules: Rule[] = [
           IMPORT_PATTERN.lastIndex = 0;
           let match;
           while ((match = IMPORT_PATTERN.exec(line)) !== null) {
-            if (analyzedFiles.has(match[1])) imports.add(match[1]);
+            const resolved = resolveExistingReference(file, match[1]);
+            if (!resolved) continue;
+            try {
+              const analyzedTarget = analyzedByCanonicalPath.get(fs.realpathSync.native(resolved));
+              if (analyzedTarget) imports.add(analyzedTarget);
+            } catch {
+              // The reference changed after resolution; leave it outside the analyzed graph.
+            }
           }
         }
 

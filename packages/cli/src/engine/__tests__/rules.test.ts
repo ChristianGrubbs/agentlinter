@@ -4,7 +4,9 @@ import path from "node:path";
 import { clarityRules } from "../rules/clarity";
 import { consistencyRules } from "../rules/consistency";
 import { hooksStructureRules } from "../rules/hooksStructure";
+import { importValidatorRules } from "../rules/importValidator";
 import { skillSafetyRules } from "../rules/skillSafety";
+import { scanWorkspaceDetailed } from "../parser";
 import type { Diagnostic, FileInfo, Rule } from "../types";
 import { withWorkspace } from "./workspace";
 
@@ -100,6 +102,54 @@ test("existing-but-unscanned references", () => {
     { path: "Details.md", content: "# Details" },
   ], (workspaceRoot) => {
     assertRuleOutput(rule, [fixture(workspaceRoot, "AGENTS.md", "Read Details.md before continuing.")], []);
+  });
+});
+
+test("nested, absolute, and home references reach on-disk resolution", () => {
+  const rule = ruleById(consistencyRules, "consistency/referenced-files-exist");
+
+  withWorkspace([
+    { path: "AGENTS.md", content: "# Agent" },
+    { path: "docs/Details.md", content: "# Details" },
+    { path: "absolute/Guide.md", content: "# Guide" },
+    { path: "Manual.md", content: "# Manual" },
+  ], (workspaceRoot) => {
+    const previousHome = process.env.HOME;
+    process.env.HOME = workspaceRoot;
+    try {
+      const content = [
+        "Read docs/Details.md before continuing.",
+        `Check ${path.join(workspaceRoot, "absolute/Guide.md")} before continuing.`,
+        "Refer to ~/Manual.md before continuing.",
+        "Read docs/README.md for the generic pattern.",
+        "Read docs/Missing.md before continuing.",
+      ].join("\n");
+      const diagnostics = rule.check([fixture(workspaceRoot, "AGENTS.md", content)]);
+
+      assert.equal(diagnostics.length, 1);
+      assert.match(diagnostics[0].message, /docs\/Missing\.md/);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+});
+
+test("circular imports normalize directory-relative and alias paths to analyzed files", () => {
+  const rule = ruleById(importValidatorRules, "structure/circular-import");
+
+  withWorkspace([
+    { path: "CLAUDE.md", content: "@.claude/rules/Alias.md" },
+    { path: ".claude/rules/B.md", content: "@../../CLAUDE.md" },
+    { path: ".claude/rules/Alias.md", symlinkTo: "B.md" },
+  ], (workspaceRoot) => {
+    const diagnostics = rule.check(scanWorkspaceDetailed(workspaceRoot).files);
+
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].severity, "error");
+    assert.equal(diagnostics[0].rule, "structure/circular-import");
+    assert.match(diagnostics[0].message, /\.claude\/rules\/B\.md/);
+    assert.match(diagnostics[0].message, /CLAUDE\.md/);
   });
 });
 

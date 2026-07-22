@@ -94,7 +94,38 @@ test("excludes .claude/worktrees recursively and reports the reason", () => {
   });
 });
 
-test("ignores a symlink whose real target escapes the Workspace", () => {
+test("excludes symlink aliases that resolve into .claude/worktrees", () => {
+  withWorkspace([
+    { path: "AGENTS.md", content: "# Agent" },
+    { path: ".claude/worktrees/run/CLAUDE.md", content: "# Generated" },
+    { path: ".claude/alias", symlinkTo: "worktrees/run" },
+  ], (workspaceRoot) => {
+    assertScan(workspaceRoot, {
+      files: [{
+        name: "AGENTS.md",
+        path: "<workspace>/AGENTS.md",
+        workspaceRoot: "<workspace>",
+        canonicalPath: "<workspace>/AGENTS.md",
+        content: "# Agent",
+        lines: ["# Agent"],
+        sections: [{ heading: "Agent", level: 1, startLine: 0, endLine: 0, content: "# Agent" }],
+        context: "openclaw-runtime",
+      }],
+      summary: {
+        policyVersion: "2026-07-22",
+        discovered: 3,
+        analyzed: 1,
+        aliases: [],
+        ignored: [
+          { logicalPath: ".claude/alias", reason: "generated-worktree" },
+          { logicalPath: ".claude/worktrees", reason: "generated-worktree" },
+        ],
+      },
+    });
+  });
+});
+
+test("ignores an outside-workspace CLAUDE.md symlink without changing accepted context", () => {
   withWorkspace([
     { path: "AGENTS.md", content: "# Agent" },
     { path: "CLAUDE.md", symlinkTo: "/dev/null" },
@@ -108,7 +139,7 @@ test("ignores a symlink whose real target escapes the Workspace", () => {
         content: "# Agent",
         lines: ["# Agent"],
         sections: [{ heading: "Agent", level: 1, startLine: 0, endLine: 0, content: "# Agent" }],
-        context: "claude-code",
+        context: "openclaw-runtime",
       }],
       summary: {
         policyVersion: "2026-07-22",
