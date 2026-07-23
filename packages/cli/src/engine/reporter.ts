@@ -1,7 +1,9 @@
 /* ─── Output Reporter ─── */
 
-import { LintResult, CATEGORY_LABELS, Diagnostic } from "./types";
+import { LintResult, CATEGORY_LABELS } from "./types";
 import { estimateBudget, formatBudgetReport } from "./budget";
+import { gradeForScore } from "./scoringPolicy";
+import { logEngineDecision } from "./decisionLog";
 
 /**
  * Format lint result as terminal output
@@ -10,7 +12,7 @@ export function formatTerminal(result: LintResult): string {
   const lines: string[] = [];
 
   lines.push("");
-  lines.push("🔍 AgentLinter v1.1.0");
+  lines.push("🔍 AgentLinter");
   lines.push(`📁 Scanning workspace: ${result.workspace}`);
   lines.push(`📄 Files found: ${result.files.map((f) => f.name).join(", ")}`);
   lines.push("");
@@ -42,11 +44,13 @@ export function formatTerminal(result: LintResult): string {
   lines.push("");
 
   // Diagnostics
-  const errors = result.diagnostics.filter((d) => d.severity === "critical");
+  const criticals = result.diagnostics.filter((d) => d.severity === "critical");
+  const errors = result.diagnostics.filter((d) => d.severity === "error");
   const warnings = result.diagnostics.filter((d) => d.severity === "warning");
   const infos = result.diagnostics.filter((d) => d.severity === "info");
 
   const counts = [
+    criticals.length > 0 ? `${criticals.length} critical(s)` : null,
     errors.length > 0 ? `${errors.length} error(s)` : null,
     warnings.length > 0 ? `${warnings.length} warning(s)` : null,
     infos.length > 0 ? `${infos.length} info(s)` : null,
@@ -60,13 +64,15 @@ export function formatTerminal(result: LintResult): string {
   }
 
   // List diagnostics grouped by severity
-  for (const diag of [...errors, ...warnings, ...infos]) {
+  for (const diag of [...criticals, ...errors, ...warnings, ...infos]) {
     const icon =
       diag.severity === "critical"
-        ? "❌ ERROR"
-        : diag.severity === "warning"
-          ? "⚠️  WARN"
-          : "ℹ️  INFO";
+        ? "❌ CRIT"
+        : diag.severity === "error"
+          ? "❌ ERROR"
+          : diag.severity === "warning"
+            ? "⚠️  WARN"
+            : "ℹ️  INFO";
 
     const location = diag.line ? `${diag.file}:${diag.line}` : diag.file;
     lines.push(`  ${icon}  ${location}`);
@@ -92,44 +98,41 @@ export function formatTerminal(result: LintResult): string {
 /**
  * Format lint result as JSON
  */
-export function formatJSON(result: LintResult): string {
-  return JSON.stringify(
-    {
-      score: result.totalScore,
-      categories: result.categories.map((c) => ({
-        name: CATEGORY_LABELS[c.category],
-        score: c.score,
-        weight: c.weight,
-        issueCount: c.diagnostics.length,
-        topIssues: c.diagnostics
-          .sort((a, b) => {
-            const sev: Record<string, number> = { critical: 0, error: 1, warning: 2, info: 3 };
-            return (sev[a.severity] ?? 3) - (sev[b.severity] ?? 3);
-          })
-          .slice(0, 5)
-          .map((d) => ({
-            severity: d.severity,
-            file: d.file,
-            line: d.line,
-            message: d.message,
-            fix: d.fix,
-          })),
-      })),
-      diagnostics: result.diagnostics.map((d) => ({
-        severity: d.severity,
-        category: d.category,
-        rule: d.rule,
-        file: d.file,
-        line: d.line,
-        message: d.message,
-        fix: d.fix,
-      })),
-      files: result.files.map((f) => f.name),
-      timestamp: result.timestamp,
-    },
-    null,
-    2
+export function formatJSON(result: LintResult, { engineVersion }: { engineVersion: string }): string {
+  const severityCounts = result.diagnostics.reduce(
+    (counts, diagnostic) => ({ ...counts, [diagnostic.severity]: counts[diagnostic.severity] + 1 }),
+    { critical: 0, error: 0, warning: 0, info: 0 },
   );
+  const report = {
+    schemaVersion: 2,
+    engineVersion,
+    scoreKind: result.scoringPolicy.kind,
+    score: result.totalScore,
+    grade: gradeForScore(result.totalScore),
+    context: result.context,
+    categories: result.categories.map((category) => ({
+      key: category.category,
+      name: CATEGORY_LABELS[category.category],
+      score: category.score,
+      grade: gradeForScore(category.score),
+      weight: category.weight,
+      diagnosticCount: category.diagnostics.length,
+    })),
+    severityCounts,
+    ruleSummary: result.ruleSummary,
+    rules: result.rules,
+    scan: result.scan,
+    scoringPolicy: result.scoringPolicy,
+    diagnostics: result.diagnostics,
+    files: result.files.map((file) => file.name),
+    timestamp: result.timestamp,
+  };
+  logEngineDecision({
+    event: "report_serialized",
+    loc: "engine.reporter.formatJSON",
+    ctx: { diagnosticCount: result.diagnostics.length, ruleCount: result.rules.length, schemaVersion: report.schemaVersion },
+  });
+  return JSON.stringify(report, null, 2);
 }
 
 /**

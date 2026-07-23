@@ -1,5 +1,18 @@
-// Score → letter grade scale, shared by the Run route (Task 4) and the
-// Dashboard (Task 6). Additive file — not one of the three upstream-modified files.
+export const GRADE_SCALE = [
+  { grade: "S", min: 98 },
+  { grade: "A+", min: 96 },
+  { grade: "A", min: 93 },
+  { grade: "A-", min: 90 },
+  { grade: "B+", min: 85 },
+  { grade: "B", min: 80 },
+  { grade: "B-", min: 75 },
+  { grade: "C+", min: 68 },
+  { grade: "C", min: 60 },
+  { grade: "C-", min: 55 },
+  { grade: "D", min: 50 },
+  { grade: "F", min: 0 },
+] as const;
+
 export function gradeFor(score: number): string {
-  return score >= 95 ? "S" : score >= 90 ? "A+" : score >= 85 ? "A" : score >= 80 ? "A-" : score >= 75 ? "B+" : score >= 68 ? "B" : "C";
+  return GRADE_SCALE.find((tier) => score >= tier.min)?.grade ?? "F";
 }

@@ -1,12 +1,36 @@
 /* ─── @ Import Validator ─── */
 // v2.1: dead-import, circular-import
 
-import { Rule, Diagnostic } from "../types";
+import { Rule, Diagnostic, FileInfo } from "../types";
 import * as fs from "fs";
 import * as path from "path";
 
 // Pattern to match @file references (Claude Code import syntax)
-const IMPORT_PATTERN = /@([a-zA-Z0-9_\-./]+\.md)/g;
+const IMPORT_PATTERN = /@([~a-zA-Z0-9_\-./]+\.md)/g;
+
+/** Resolve a referenced file using source-local, workspace, then absolute/home paths. */
+export function resolveExistingReference(file: FileInfo, reference: string): string | null {
+  const sourceDirectory = path.dirname(file.path);
+  const workspaceRoot = file.workspaceRoot || sourceDirectory;
+  const candidates = [
+    path.resolve(sourceDirectory, reference),
+    path.resolve(workspaceRoot, reference),
+  ];
+
+  if (path.isAbsolute(reference)) {
+    candidates.push(path.normalize(reference));
+  } else if (reference === "~" || reference.startsWith("~/")) {
+    const homeDirectory = process.env.HOME || process.env.USERPROFILE;
+    if (homeDirectory) {
+      candidates.push(reference === "~" ? homeDirectory : path.join(homeDirectory, reference.slice(2)));
+    }
+  }
+
+  for (const candidate of new Set(candidates)) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
 
 export const importValidatorRules: Rule[] = [
   // dead-import: @file.md references that don't exist
@@ -19,8 +43,6 @@ export const importValidatorRules: Rule[] = [
       const diagnostics: Diagnostic[] = [];
 
       for (const file of files) {
-        const workspaceDir = file.path ? path.dirname(file.path) : process.cwd();
-
         let codeBlock = false;
         for (let i = 0; i < file.lines.length; i++) {
           const line = file.lines[i];
@@ -35,11 +57,7 @@ export const importValidatorRules: Rule[] = [
           while ((match = IMPORT_PATTERN.exec(line)) !== null) {
             const importPath = match[1];
 
-            // Check relative to file directory, then workspace root
-            const resolved = path.resolve(workspaceDir, importPath);
-            const resolvedFromParent = path.resolve(workspaceDir, "..", importPath);
-
-            if (!fs.existsSync(resolved) && !fs.existsSync(resolvedFromParent)) {
+            if (!resolveExistingReference(file, importPath)) {
               diagnostics.push({
                 severity: "warning",
                 category: "structure",
@@ -69,6 +87,14 @@ export const importValidatorRules: Rule[] = [
 
       // Build import graph: filename -> set of imported filenames
       const graph = new Map<string, Set<string>>();
+      const analyzedByCanonicalPath = new Map<string, string>();
+      for (const file of files) {
+        try {
+          analyzedByCanonicalPath.set(fs.realpathSync.native(file.canonicalPath || file.path), file.name);
+        } catch {
+          // Missing analyzed paths cannot participate in the on-disk import graph.
+        }
+      }
 
       for (const file of files) {
         const imports = new Set<string>();
@@ -84,7 +110,14 @@ export const importValidatorRules: Rule[] = [
           IMPORT_PATTERN.lastIndex = 0;
           let match;
           while ((match = IMPORT_PATTERN.exec(line)) !== null) {
-            imports.add(match[1]);
+            const resolved = resolveExistingReference(file, match[1]);
+            if (!resolved) continue;
+            try {
+              const analyzedTarget = analyzedByCanonicalPath.get(fs.realpathSync.native(resolved));
+              if (analyzedTarget) imports.add(analyzedTarget);
+            } catch {
+              // The reference changed after resolution; leave it outside the analyzed graph.
+            }
           }
         }
 

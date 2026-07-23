@@ -2,13 +2,106 @@
 
 import { Rule, Diagnostic } from "../types";
 
+const HOOKS_DOCS_URL = "https://code.claude.com/docs/en/hooks";
+
 const VALID_EVENTS = [
+  "SessionStart",
+  "Setup",
+  "UserPromptSubmit",
+  "UserPromptExpansion",
   "PreToolUse",
+  "PermissionRequest",
+  "PermissionDenied",
   "PostToolUse",
-  "Stop",
-  "SubagentStop",
+  "PostToolUseFailure",
+  "PostToolBatch",
   "Notification",
+  "MessageDisplay",
+  "SubagentStart",
+  "SubagentStop",
+  "TaskCreated",
+  "TaskCompleted",
+  "Stop",
+  "StopFailure",
+  "TeammateIdle",
+  "InstructionsLoaded",
+  "ConfigChange",
+  "CwdChanged",
+  "FileChanged",
+  "WorktreeCreate",
+  "WorktreeRemove",
+  "PreCompact",
+  "PostCompact",
+  "Elicitation",
+  "ElicitationResult",
+  "SessionEnd",
 ];
+
+const VALID_HANDLER_TYPES = new Set(["command", "prompt", "agent", "http", "mcp_tool"]);
+
+type HookHandler = {
+  type: "command" | "prompt" | "agent" | "http" | "mcp_tool";
+  command?: string;
+  prompt?: string;
+  url?: string;
+  server?: string;
+  tool?: string;
+  input?: Record<string, unknown>;
+};
+
+type HookGroup = {
+  matcher?: string;
+  hooks: HookHandler[];
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function requiredHandlerField(type: Exclude<HookHandler["type"], "mcp_tool">): keyof HookHandler {
+  if (type === "command") return "command";
+  if (type === "http") return "url";
+  return "prompt";
+}
+
+function validateHookGroup(group: unknown): string | null {
+  if (!isRecord(group)) return "Hook matcher group must be an object";
+
+  const candidate = group as Partial<HookGroup>;
+  if (candidate.matcher !== undefined && typeof candidate.matcher !== "string") {
+    return 'Hook matcher group "matcher" must be a string when present';
+  }
+  if (!Array.isArray(candidate.hooks) || candidate.hooks.length === 0) {
+    return 'Hook matcher group must contain a non-empty "hooks" array';
+  }
+
+  for (const handler of candidate.hooks) {
+    if (!isRecord(handler)) return "Nested hook handler must be an object";
+    if (typeof handler.type !== "string" || !VALID_HANDLER_TYPES.has(handler.type)) {
+      return 'Nested hook handler must have type "command", "prompt", "agent", "http", or "mcp_tool"';
+    }
+
+    const type = handler.type as HookHandler["type"];
+    if (type === "mcp_tool") {
+      for (const field of ["server", "tool"] as const) {
+        if (typeof handler[field] !== "string" || !handler[field].trim()) {
+          return `Nested mcp_tool hook handler is missing required "${field}" field`;
+        }
+      }
+      if (handler.input !== undefined && !isRecord(handler.input)) {
+        return 'Nested mcp_tool hook handler "input" must be an object when present';
+      }
+      continue;
+    }
+
+    const requiredField = requiredHandlerField(type);
+    if (typeof handler[requiredField] !== "string" || !handler[requiredField].trim()) {
+      return `Nested ${type} hook handler is missing required "${requiredField}" field`;
+    }
+  }
+
+  return null;
+}
 
 export const hooksStructureRules: Rule[] = [
   {
@@ -27,50 +120,56 @@ export const hooksStructureRules: Rule[] = [
 
         if (!isHooksFile) continue;
 
-        // Check for invalid event names (CamelCase words that don't match valid events)
-        const eventMatches = [
-          ...file.content.matchAll(
-            /["']?(PreToolUse|PostToolUse|Stop|SubagentStop|Notification|[A-Z][a-zA-Z]+)["']?\s*[:=]/g
-          ),
-        ];
-
-        for (const match of eventMatches) {
-          const eventName = match[1];
-          if (!VALID_EVENTS.includes(eventName) && /^[A-Z]/.test(eventName)) {
-            // Skip common JSON keys that happen to be PascalCase but aren't hook events
-            const skipWords = ["Claude", "Model", "Type", "Name", "Command", "Path", "Config", "Settings"];
-            if (skipWords.some((w) => eventName.startsWith(w))) continue;
-
-            diagnostics.push({
-              severity: "warning",
-              category: "runtime",
-              rule: "claude-code/hooks-structure",
-              file: file.name,
-              message: `Unknown hook event "${eventName}". Valid events: ${VALID_EVENTS.join(", ")}`,
-              fix: `Use one of: ${VALID_EVENTS.join(", ")}`,
-            });
-          }
-        }
-
-        // For JSON hook files: check that hook entries have "command" field
+        // Claude settings use event -> matcher group[] -> handler[] nesting.
         if (file.name.endsWith(".json")) {
           try {
             const parsed = JSON.parse(file.content);
             const hooks = parsed?.hooks;
-            if (hooks && typeof hooks === "object") {
+            if (hooks !== undefined && !isRecord(hooks)) {
+              diagnostics.push({
+                severity: "error",
+                category: "runtime",
+                rule: "claude-code/hooks-structure",
+                file: file.name,
+                message: 'The "hooks" setting must be an object keyed by hook event',
+                fix: 'Use "hooks": { "PreToolUse": [{ "matcher": "...", "hooks": [...] }] }',
+              });
+            } else if (isRecord(hooks)) {
               for (const [eventName, entries] of Object.entries(hooks)) {
-                const hookList = Array.isArray(entries) ? entries : [entries];
-                for (const hook of hookList as Record<string, unknown>[]) {
-                  if (hook && typeof hook === "object" && !hook.command) {
-                    diagnostics.push({
-                      severity: "error",
-                      category: "runtime",
-                      rule: "claude-code/hooks-structure",
-                      file: file.name,
-                      message: `Hook entry for "${eventName}" is missing required "command" field`,
-                      fix: `Add "command": "<shell-command>" to the hook definition`,
-                    });
-                  }
+                if (!VALID_EVENTS.includes(eventName)) {
+                  diagnostics.push({
+                    severity: "info",
+                    category: "runtime",
+                    rule: "claude-code/hooks-structure",
+                    file: file.name,
+                    message: `Unknown hook event "${eventName}". Check the current official event list: ${HOOKS_DOCS_URL}`,
+                    fix: `Verify the event name against ${HOOKS_DOCS_URL}`,
+                  });
+                }
+
+                if (!Array.isArray(entries) || entries.length === 0) {
+                  diagnostics.push({
+                    severity: "error",
+                    category: "runtime",
+                    rule: "claude-code/hooks-structure",
+                    file: file.name,
+                    message: `Hook event "${eventName}" must contain a non-empty array of matcher groups`,
+                    fix: 'Add a matcher group containing a non-empty nested "hooks" array',
+                  });
+                  continue;
+                }
+
+                for (const group of entries) {
+                  const issue = validateHookGroup(group);
+                  if (!issue) continue;
+                  diagnostics.push({
+                    severity: "error",
+                    category: "runtime",
+                    rule: "claude-code/hooks-structure",
+                    file: file.name,
+                    message: `${issue} for hook event "${eventName}"`,
+                    fix: "Use a matcher group with valid nested command, prompt, agent, http, or mcp_tool handlers",
+                  });
                 }
               }
             }

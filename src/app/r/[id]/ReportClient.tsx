@@ -5,6 +5,7 @@ import {
   Github,
 } from "lucide-react";
 import { useState } from "react";
+import { diagnosticTotal, engineLabel, shareText } from "@/lib/reportViewModel";
 import { getTier } from "./utils/getTier";
 import TabBar from "./components/TabBar";
 import OverviewTab from "./components/OverviewTab";
@@ -42,11 +43,8 @@ function Logo({ size = 24 }: { size?: number }) {
 export default function ReportPage({ data }: { data: ReportData }) {
   const tier = getTier(data.totalScore);
   const [activeTab, setActiveTab] = useState("overview");
-
-  const percentile = data.totalScore >= 98 ? 1 : data.totalScore >= 96 ? 3 : data.totalScore >= 93 ? 5 : data.totalScore >= 90 ? 8 : data.totalScore >= 85 ? 12 : data.totalScore >= 80 ? 18 : data.totalScore >= 75 ? 25 : data.totalScore >= 68 ? 35 : 50;
-
-  const shareText = `\u{1F9EC} AgentLinter Score: ${data.totalScore}/100\n\n\u2B50 ${tier.grade} tier \u00B7 Top ${percentile}%\n\nIs YOUR AI agent secure?\nFree & open source \u2014 try it yourself:\n\nnpx agentlinter\n\nhttps://agentlinter.com`;
-  const shareUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}`;
+  const reportEngine = engineLabel(data);
+  const shareUrl = `https://x.com/intent/post?text=${encodeURIComponent(shareText(data))}`;
 
   return (
     <div className="min-h-screen bg-[var(--bg)] noise">
@@ -57,7 +55,7 @@ export default function ReportPage({ data }: { data: ReportData }) {
             <Logo size={20} />
             <span className="font-semibold text-[14px]">AgentLinter</span>
             <span className="text-[11px] mono text-[var(--text-dim)] ml-1">Report</span>
-            <span className="text-[10px] mono text-[var(--text-dim)]/60 ml-2">v2.3.0</span>
+            <span className="text-[10px] mono text-[var(--text-dim)]/60 ml-2">Engine {reportEngine}</span>
           </a>
           <div className="flex items-center gap-3">
             <a
@@ -84,7 +82,7 @@ export default function ReportPage({ data }: { data: ReportData }) {
       <TabBar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
-        diagnosticCount={data.diagnostics.length}
+        reportDiagnosticCount={diagnosticTotal(data)}
         score={data.totalScore}
       />
 
@@ -110,7 +108,7 @@ export default function ReportPage({ data }: { data: ReportData }) {
           <div className="flex items-center gap-2">
             <Logo size={14} />
             <span>AgentLinter</span>
-            <span className="text-[10px] mono">v0.1.0</span>
+            <span className="text-[10px] mono">Engine {reportEngine}</span>
           </div>
           <span className="mono">{new Date(data.timestamp).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })}</span>
         </div>

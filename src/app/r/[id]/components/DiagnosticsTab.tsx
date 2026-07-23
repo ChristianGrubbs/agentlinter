@@ -3,167 +3,149 @@
 import {
   AlertCircle,
   AlertTriangle,
-  Info,
   CheckCircle2,
-  Zap,
-  Sparkles,
   Copy,
+  Info,
+  Zap,
 } from "lucide-react";
 import { useState } from "react";
+
+import type { Severity } from "@/lib/localStore";
+import { countedSeverity, hiddenLegacyDiagnosticCount, severityStats } from "@/lib/reportViewModel";
 import type { ReportData } from "../types";
-import { CATEGORY_META } from "../constants/category-meta";
 import { RULE_EDUCATION } from "../constants/rule-education";
 import CodeBlock from "./CodeBlock";
+import { useCopyReportLink } from "./useCopyReportLink";
 
-function SeverityIcon({ severity }: { severity: string }) {
-  if (severity === "critical" || severity === "error") return <AlertCircle className="w-5 h-5 shrink-0 text-[var(--red)]" />;
+function SeverityIcon({ severity }: { severity: Severity }) {
+  if (severity === "critical") return <AlertCircle className="w-5 h-5 shrink-0 text-[var(--red)]" />;
+  if (severity === "error") return <AlertTriangle className="w-5 h-5 shrink-0 text-[#fb7185]" />;
   if (severity === "warning") return <AlertTriangle className="w-5 h-5 shrink-0 text-[var(--amber)]" />;
   return <Info className="w-5 h-5 shrink-0 text-[var(--text-dim)]" />;
 }
 
-type SeverityFilter = "critical" | "warning" | "info";
+const FILTER_STYLES: Record<Severity, string> = {
+  critical: "bg-[var(--red)]/15 text-[var(--red)] ring-[var(--red)]/30",
+  error: "bg-[#fb7185]/15 text-[#fb7185] ring-[#fb7185]/30",
+  warning: "bg-[var(--amber)]/15 text-[var(--amber)] ring-[var(--amber)]/30",
+  info: "bg-white/10 text-[var(--text-secondary)] ring-white/20",
+};
 
 export default function DiagnosticsTab({ data }: { data: ReportData }) {
-  const [filters, setFilters] = useState<Set<SeverityFilter>>(new Set(["critical", "warning", "info"]));
-  const [copiedLink, setCopiedLink] = useState(false);
+  const [filters, setFilters] = useState<Set<Severity>>(
+    new Set(["critical", "error", "warning", "info"]),
+  );
+  const { copyState, copyReportLink } = useCopyReportLink();
 
-  const totalRules = Object.values(CATEGORY_META).reduce((sum, c) => sum + c.rules.length, 0);
-
-  const toggleFilter = (f: SeverityFilter) => {
+  function toggleFilter(severity: Severity) {
     const next = new Set(filters);
-    if (next.has(f)) {
-      if (next.size > 1) next.delete(f);
+    if (next.has(severity)) {
+      if (next.size > 1) next.delete(severity);
     } else {
-      next.add(f);
+      next.add(severity);
     }
     setFilters(next);
-  };
+  }
 
-  const filtered = data.diagnostics.filter((d) => {
-    const sev = (d.severity === "error" ? "critical" : d.severity) as SeverityFilter;
-    return filters.has(sev);
-  });
-
-  const criticalCount = data.diagnostics.filter((d) => d.severity === "critical" || d.severity === "error").length;
-  const warningCount = data.diagnostics.filter((d) => d.severity === "warning").length;
-  const infoCount = data.diagnostics.filter((d) => d.severity === "info").length;
+  const filtered = data.diagnostics.filter((diagnostic) => filters.has(diagnostic.severity));
+  const hiddenLegacyDiagnostics = hiddenLegacyDiagnosticCount(data);
 
   if (data.diagnostics.length === 0) {
     return (
       <div className="animate-fade-in flex flex-col items-center justify-center py-20 text-center">
         <CheckCircle2 className="w-16 h-16 text-[var(--green)] mb-4" />
-        <div className="text-[32px] font-bold text-[var(--green)]">Zero issues</div>
-        <p className="text-[14px] text-[var(--text-secondary)] mt-2">
-          All {totalRules} rules passed without any flags.
-        </p>
+        <div className="text-[28px] font-bold text-[var(--green)]">
+          {hiddenLegacyDiagnostics > 0 ? "No renderable diagnostics" : "No diagnostics emitted"}
+        </div>
+        {!data.legacy && (
+          <p className="mt-2 text-[14px] text-[var(--text-secondary)]">
+            {data.ruleSummary.passed} of {data.ruleSummary.evaluated} evaluated rules passed.
+          </p>
+        )}
+        {data.legacy && hiddenLegacyDiagnostics > 0 && (
+          <p className="mt-3 max-w-lg text-[13px] text-[var(--amber)]">
+            {hiddenLegacyDiagnostics} of {data.rawLegacyDiagnostics.length} historic diagnostic payloads could not be rendered.
+          </p>
+        )}
       </div>
     );
   }
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* Fix CTA banner */}
-      {criticalCount > 0 && (
-        <button
-          onClick={() => {
-            navigator.clipboard.writeText(window.location.href);
-            setCopiedLink(true);
-            setTimeout(() => setCopiedLink(false), 2000);
-          }}
-          className="w-full rounded-xl bg-[var(--accent)] p-4 flex items-center gap-3 text-left hover:brightness-110 transition-all"
-        >
-          <Sparkles className="w-5 h-5 text-white shrink-0" />
-          <span className="text-[15px] font-medium text-white flex-1">Fix all {data.diagnostics.length} issues with AI</span>
-          <span className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/20 text-white text-[13px] font-medium">
-            <Copy className="w-3.5 h-3.5" />
-            {copiedLink ? "Copied!" : "Copy Link"}
-          </span>
-        </button>
+      {data.legacy && hiddenLegacyDiagnostics > 0 && (
+        <div className="rounded-xl border border-[var(--amber)]/25 bg-[var(--amber)]/5 p-4 text-[13px] text-[var(--amber)]">
+          {hiddenLegacyDiagnostics} of {data.rawLegacyDiagnostics.length} historic diagnostic payloads could not be rendered; legacy totals can exceed the cards below.
+        </div>
       )}
+      <button
+        type="button"
+        onClick={() => void copyReportLink()}
+        className="flex w-full items-center gap-3 rounded-xl border border-[var(--accent-dim)] bg-[var(--bg-card)] p-4 text-left transition-colors hover:bg-white/5"
+      >
+        <Copy className="w-5 h-5 text-[var(--accent)] shrink-0" />
+        <span className="text-[15px] font-medium flex-1">Copy Report link</span>
+        <span className="text-[13px] text-[var(--text-secondary)]">
+          {copyState === "copied" ? "Copied" : copyState === "failed" ? "Clipboard unavailable" : "Copy"}
+        </span>
+      </button>
 
-      {/* Filter bar */}
-      <div className="flex gap-2">
-        <button
-          onClick={() => toggleFilter("critical")}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] mono font-medium transition-all ${
-            filters.has("critical")
-              ? "bg-[var(--red)]/15 text-[var(--red)] ring-1 ring-[var(--red)]/30"
-              : "bg-white/5 text-[var(--text-dim)]"
-          }`}
-        >
-          <AlertCircle className="w-3.5 h-3.5" />
-          {criticalCount} critical{criticalCount !== 1 ? "s" : ""}
-        </button>
-        <button
-          onClick={() => toggleFilter("warning")}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] mono font-medium transition-all ${
-            filters.has("warning")
-              ? "bg-[var(--amber)]/15 text-[var(--amber)] ring-1 ring-[var(--amber)]/30"
-              : "bg-white/5 text-[var(--text-dim)]"
-          }`}
-        >
-          <AlertTriangle className="w-3.5 h-3.5" />
-          {warningCount} warning{warningCount !== 1 ? "s" : ""}
-        </button>
-        <button
-          onClick={() => toggleFilter("info")}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] mono font-medium transition-all ${
-            filters.has("info")
-              ? "bg-white/10 text-[var(--text-secondary)] ring-1 ring-white/20"
-              : "bg-white/5 text-[var(--text-dim)]"
-          }`}
-        >
-          <Info className="w-3.5 h-3.5" />
-          {infoCount} info
-        </button>
+      <div className="flex flex-wrap gap-2" aria-label="Severity filters">
+        {severityStats(data).map(({ severity, count }) => (
+          <button
+            type="button"
+            key={severity}
+            onClick={() => toggleFilter(severity)}
+            aria-pressed={filters.has(severity)}
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] mono font-medium transition-all ${
+              filters.has(severity)
+                ? `${FILTER_STYLES[severity]} ring-1`
+                : "bg-white/5 text-[var(--text-dim)]"
+            }`}
+          >
+            <SeverityIcon severity={severity} />
+            {countedSeverity(count, severity)}
+          </button>
+        ))}
       </div>
 
-      {/* Issue cards */}
       <div className="space-y-3">
-        {filtered.map((d, i) => {
-          const education = RULE_EDUCATION[d.rule];
+        {filtered.map((diagnostic, index) => {
+          const education = RULE_EDUCATION[diagnostic.rule];
           return (
-            <div key={i} className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5">
+            <div key={`${diagnostic.rule}:${diagnostic.file}:${diagnostic.line ?? 0}:${index}`} className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5">
               <div className="flex items-start gap-3">
-                <SeverityIcon severity={d.severity} />
+                <SeverityIcon severity={diagnostic.severity} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap mb-1">
                     <span className="text-[13px] mono text-[var(--text-secondary)]">
-                      {d.file}{d.line ? `:${d.line}` : ""}
+                      {diagnostic.file}{diagnostic.line ? `:${diagnostic.line}` : ""}
                     </span>
                     <span className="text-[11px] mono px-1.5 py-0.5 rounded bg-white/5 text-[var(--text-dim)]">
-                      {d.rule}
+                      {diagnostic.rule}
                     </span>
-                    <span className={`text-[11px] mono px-1.5 py-0.5 rounded ${
-                      d.severity === "critical" || d.severity === "error" ? "bg-[var(--red)]/10 text-[var(--red)]" :
-                      d.severity === "warning" ? "bg-[var(--amber)]/10 text-[var(--amber)]" :
-                      "bg-white/5 text-[var(--text-dim)]"
-                    }`}>
-                      {d.severity}
+                    <span className="text-[11px] mono px-1.5 py-0.5 rounded bg-white/5 text-[var(--text-secondary)]">
+                      {diagnostic.severity}
                     </span>
                   </div>
-                  <p className="text-[14px] text-[var(--text)]">{d.message}</p>
+                  <p className="text-[14px] text-[var(--text)]">{diagnostic.message}</p>
                 </div>
               </div>
 
-              {d.fix && (
+              {diagnostic.fix && (
                 <div className="mt-3 flex items-start gap-2 px-3 py-2.5 rounded-lg bg-[var(--green)]/5 border border-[var(--green)]/10">
                   <Zap className="w-3.5 h-3.5 mt-0.5 text-[var(--green)] shrink-0" />
-                  <span className="text-[13px] text-[var(--green)]">
-                    <strong>Fix:</strong> {d.fix}
-                  </span>
+                  <span className="text-[13px] text-[var(--green)]"><strong>Suggested fix:</strong> {diagnostic.fix}</span>
                 </div>
               )}
 
               {education && (
                 <div className="mt-3 space-y-2">
-                  <p className="text-[13px] text-[var(--text-secondary)] leading-relaxed">
-                    {education.impact}
-                  </p>
+                  <p className="text-[13px] text-[var(--text-secondary)] leading-relaxed">{education.impact}</p>
                   {education.example && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
-                      <CodeBlock code={education.example.bad} label="\u274C Before" />
-                      <CodeBlock code={education.example.good} label="\u2705 After" />
+                      <CodeBlock code={education.example.bad} label="Before" />
+                      <CodeBlock code={education.example.good} label="After" />
                     </div>
                   )}
                 </div>

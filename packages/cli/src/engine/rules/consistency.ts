@@ -1,6 +1,23 @@
 /* ─── Consistency Rules (15%) ─── */
 
 import { Rule, Diagnostic } from "../types";
+import { resolveExistingReference } from "./importValidator";
+import * as path from "path";
+
+const REFERENCE_PATH_PREFIX = String.raw`(?:~\/|\/|\.\.?\/)?(?:[A-Za-z0-9_.-]+\/)*`;
+const REFERENCE_BASENAME = String.raw`[A-Za-z0-9_.-]+`;
+const REFERENCE_PATH = `${REFERENCE_PATH_PREFIX}${REFERENCE_BASENAME}\\.[A-Za-z0-9]+`;
+const MARKDOWN_REFERENCE_PATH = `${REFERENCE_PATH_PREFIX}${REFERENCE_BASENAME}\\.md`;
+const OPTIONAL_REFERENCE_QUOTE = "[`\"']?";
+const DIRECTIVE_REFERENCE_PATTERN = new RegExp(
+  String.raw`(?:see|read|check|refer to|load|include)\s+` +
+    `${OPTIONAL_REFERENCE_QUOTE}(${MARKDOWN_REFERENCE_PATH})(?:#[a-z0-9-]+)?${OPTIONAL_REFERENCE_QUOTE}`,
+  "gi",
+);
+const BACKTICK_REFERENCE_PATTERN = new RegExp(
+  "`(" + REFERENCE_PATH + ")(?:#[a-z0-9-]+)?`",
+  "g",
+);
 
 export const consistencyRules: Rule[] = [
   {
@@ -14,12 +31,6 @@ export const consistencyRules: Rule[] = [
       const checkFiles = files.filter(
         (f) => !f.name.startsWith("compound/") && !f.name.startsWith("memory/") && f.name !== "MEMORY.md"
       );
-      const fileNames = new Set(files.map((f) => f.name));
-      // Also track lowercase versions and base names (without path)
-      const fileNamesLower = new Set(files.map((f) => f.name.toLowerCase()));
-      const baseNames = new Set(files.map((f) => f.name.split("/").pop() || f.name));
-      const baseNamesLower = new Set(files.map((f) => (f.name.split("/").pop() || f.name).toLowerCase()));
-
       // Generic pattern references to skip (e.g., "Check SKILL.md for each" refers to a pattern, not a specific file)
       // Also includes common agent workspace file names that may exist but not be uploaded
       const PATTERN_REFS = new Set([
@@ -30,21 +41,16 @@ export const consistencyRules: Rule[] = [
         "USER.md", "SOUL.md", "IDENTITY.md", "TOOLS.md", "MEMORY.md",
         "BOOTSTRAP.md", "WORKSPACE.md", "CONFIG.md", "RULES.md",
       ]);
+      const isGenericPattern = (reference: string) => PATTERN_REFS.has(path.basename(reference));
 
       for (const file of checkFiles) {
         // Find references to other .md files
-        const refs = file.content.matchAll(
-          /(?:see|read|check|refer to|load|include)\s+[`"']?([A-Z][A-Za-z_-]+\.md)(?:#[a-z0-9-]+)?[`"']?/gi
-        );
+        const refs = file.content.matchAll(DIRECTIVE_REFERENCE_PATTERN);
 
         for (const match of refs) {
           const refName = match[1];
-          if (PATTERN_REFS.has(refName)) continue; // skip generic patterns
-          // Check all variants: exact, lowercase, basename, basename lowercase
-          const exists = fileNames.has(refName) 
-            || fileNamesLower.has(refName.toLowerCase())
-            || baseNames.has(refName)
-            || baseNamesLower.has(refName.toLowerCase());
+          if (isGenericPattern(refName)) continue;
+          const exists = resolveExistingReference(file, refName) !== null;
           if (!exists) {
             diagnostics.push({
               severity: "error",
@@ -58,12 +64,10 @@ export const consistencyRules: Rule[] = [
         }
 
         // Also check backtick references like `SOUL.md` or `SOUL.md#section`
-        const backtickRefs = file.content.matchAll(
-          /`([A-Za-z_-]+\.[A-Za-z]+)(?:#[a-z0-9-]+)?`/g
-        );
+        const backtickRefs = file.content.matchAll(BACKTICK_REFERENCE_PATTERN);
         for (const match of backtickRefs) {
           const refName = match[1];
-          if (PATTERN_REFS.has(refName)) continue; // skip generic patterns
+          if (isGenericPattern(refName)) continue;
           // Filter out non-file references (false positives)
           // Skip JS property access like `process.env`, `from.id` (lowercase letter + dot)
           if (/^[a-z]/.test(refName) && /^[a-z]+\.[a-z]+$/i.test(refName)) continue;
@@ -81,12 +85,8 @@ export const consistencyRules: Rule[] = [
           const ext = refName.split(".").pop()?.toLowerCase() || "";
           if (!["md", "js", "ts", "json", "yaml", "yml", "txt", "toml", "css", "html", "py", "sh", "mjs", "cjs", "jsx", "tsx"].includes(ext)) continue;
           // Must start with uppercase for .md files
-          if (refName.endsWith(".md") && !/^[A-Z]/.test(refName)) continue;
-          // Check all variants
-          const exists = fileNames.has(refName) 
-            || fileNamesLower.has(refName.toLowerCase())
-            || baseNames.has(refName)
-            || baseNamesLower.has(refName.toLowerCase());
+          if (refName.endsWith(".md") && !/^[A-Z]/.test(path.basename(refName))) continue;
+          const exists = resolveExistingReference(file, refName) !== null;
           if (!exists) {
             const alreadyFound = diagnostics.some(
               (d) =>

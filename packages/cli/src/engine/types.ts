@@ -23,6 +23,13 @@ export type Category =
  */
 export type LintContext = "claude-code" | "openclaw-runtime" | "universal" | "cursor" | "copilot";
 
+export type RuleEvidence = "schema" | "invariant" | "security" | "empirical" | "advisory";
+
+export type IgnoreReason =
+  | "generated-worktree"
+  | "duplicate-physical-file"
+  | "outside-workspace-symlink";
+
 export interface Diagnostic {
   severity: Severity;
   category: Category;
@@ -36,6 +43,8 @@ export interface Diagnostic {
 export interface FileInfo {
   name: string;
   path: string;
+  workspaceRoot: string;
+  canonicalPath: string;
   content: string;
   lines: string[];
   sections: Section[];
@@ -57,6 +66,63 @@ export interface CategoryScore {
   diagnostics: Diagnostic[];
 }
 
+export interface ScanAlias {
+  logicalPath: string;
+  canonicalPath: string;
+}
+
+export interface IgnoredPath {
+  logicalPath: string;
+  reason: IgnoreReason;
+}
+
+export interface ScanSummary {
+  policyVersion: "2026-07-22";
+  discovered: number;
+  analyzed: number;
+  aliases: ScanAlias[];
+  ignored: IgnoredPath[];
+}
+
+export interface ScanResult {
+  files: FileInfo[];
+  summary: ScanSummary;
+}
+
+export interface RuleCatalogEntry {
+  id: string;
+  category: Category;
+  defaultSeverity: Severity;
+  description: string;
+  evidence: RuleEvidence;
+  source?: { label: string; url: string; asOf: string };
+}
+
+export interface ScoringPolicySnapshot {
+  kind: "heuristic";
+  basePerCategory: number;
+  formula: string;
+  criticalPenalty: number;
+  defaultErrorPenalty: number;
+  consistencyErrorPenalty: number;
+  defaultWarningPenalty: number;
+  runtimeWarningPenalty: number;
+  infoPenalty: number;
+  infoCap: number;
+  clarityWarningCap: number;
+  consistencyFloor: number;
+  skillSafetyScaling: {
+    skillCountThreshold: number;
+    errorCap: number;
+    warningPenalty: number;
+    warningCap: number;
+  };
+  categoryWeights: Record<Category, number>;
+  gradeScale: Array<{ grade: string; min: number }>;
+  disclaimer: string;
+  bonusDescriptions: string[];
+}
+
 export interface LintResult {
   workspace: string;
   context: LintContext;
@@ -64,6 +130,10 @@ export interface LintResult {
   categories: CategoryScore[];
   totalScore: number;
   diagnostics: Diagnostic[];
+  scan: ScanSummary;
+  ruleSummary: { evaluated: number; flagged: number; passed: number };
+  rules: RuleCatalogEntry[];
+  scoringPolicy: ScoringPolicySnapshot;
   timestamp: string;
 }
 

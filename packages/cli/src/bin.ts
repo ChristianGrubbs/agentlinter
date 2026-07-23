@@ -3,13 +3,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { scanWorkspace, lint } from './engine';
+import { scanWorkspaceDetailed, lint } from './engine';
 import { formatJSON } from './engine/reporter';
 import { estimateBudget, formatBudgetReport } from './engine/budget';
 import { uploadReport } from './upload';
 import { LintResult, Diagnostic } from './engine/types';
 import { auditSkillFile, formatAuditResult, formatAuditJSON, AuditResult } from './engine/audit-skill';
 import { exportConfig, ExportFormat, getSupportedFormats } from './engine/exporter';
+import { gradeForScore } from './engine/scoringPolicy';
 
 const { version: VERSION } = JSON.parse(
   fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
@@ -90,8 +91,8 @@ async function main() {
   }
 
   try {
-    const files = scanWorkspace(targetDir);
-    if (files.length === 0) {
+    const scan = scanWorkspaceDetailed(targetDir);
+    if (scan.files.length === 0) {
       if (jsonOutput) {
         console.log(JSON.stringify({ error: "No files found", score: 0 }));
       } else {
@@ -100,10 +101,10 @@ async function main() {
       process.exit(0);
     }
 
-    const result = lint(targetDir, files);
+    const result = lint(targetDir, scan.files, { scan: scan.summary });
 
     if (jsonOutput) {
-      console.log(formatJSON(result));
+      console.log(formatJSON(result, { engineVersion: VERSION }));
     } else {
       console.log(formatTerminalColored(result));
     }
@@ -151,14 +152,11 @@ async function main() {
             .map(c => `${catLabels[c.category] || ""}${c.score}`)
             .join(" ");
           
-          const grade = result.totalScore >= 98 ? "S" : result.totalScore >= 96 ? "A+" : result.totalScore >= 93 ? "A" : result.totalScore >= 90 ? "A-" : result.totalScore >= 85 ? "B+" : result.totalScore >= 80 ? "B" : result.totalScore >= 75 ? "B-" : result.totalScore >= 68 ? "C+" : result.totalScore >= 60 ? "C" : result.totalScore >= 55 ? "C-" : result.totalScore >= 50 ? "D" : "F";
-          const percentile = result.totalScore >= 98 ? 1 : result.totalScore >= 96 ? 3 : result.totalScore >= 93 ? 5 : result.totalScore >= 90 ? 8 : result.totalScore >= 85 ? 12 : result.totalScore >= 80 ? 18 : result.totalScore >= 75 ? 25 : result.totalScore >= 68 ? 35 : 50;
-          
+          const grade = gradeForScore(result.totalScore);
           const shareText = `🧬 AgentLinter Score: ${result.totalScore}/100
 
-⭐ ${grade} tier · Top ${percentile}%
+⭐ ${grade} (heuristic configuration score)
 
-Is YOUR AI agent secure?
 Free & open source — try it yourself:
 
 npx agentlinter
@@ -193,18 +191,18 @@ function formatTerminalColored(result: LintResult): string {
   // Grade tiers (strict) - 50점 미만 F, B+ 이하 촘촘하게
   let scoreColor = c.red;
   let scoreEmoji = "💀";
-  let grade = "F";
-  if (result.totalScore >= 98) { scoreColor = c.magenta; scoreEmoji = "🏆"; grade = "S"; }
-  else if (result.totalScore >= 96) { scoreColor = c.magenta; scoreEmoji = "⭐"; grade = "A+"; }
-  else if (result.totalScore >= 93) { scoreColor = c.green; scoreEmoji = "🎯"; grade = "A"; }
-  else if (result.totalScore >= 90) { scoreColor = c.green; scoreEmoji = "✨"; grade = "A-"; }
-  else if (result.totalScore >= 85) { scoreColor = c.green; scoreEmoji = "👍"; grade = "B+"; }
-  else if (result.totalScore >= 80) { scoreColor = c.green; scoreEmoji = "👌"; grade = "B"; }
-  else if (result.totalScore >= 75) { scoreColor = c.yellow; scoreEmoji = "📝"; grade = "B-"; }
-  else if (result.totalScore >= 68) { scoreColor = c.yellow; scoreEmoji = "🔧"; grade = "C+"; }
-  else if (result.totalScore >= 60) { scoreColor = c.yellow; scoreEmoji = "📊"; grade = "C"; }
-  else if (result.totalScore >= 55) { scoreColor = c.red; scoreEmoji = "⚠️"; grade = "C-"; }
-  else if (result.totalScore >= 50) { scoreColor = c.red; scoreEmoji = "🚨"; grade = "D"; }
+  if (result.totalScore >= 98) { scoreColor = c.magenta; scoreEmoji = "🏆"; }
+  else if (result.totalScore >= 96) { scoreColor = c.magenta; scoreEmoji = "⭐"; }
+  else if (result.totalScore >= 93) { scoreColor = c.green; scoreEmoji = "🎯"; }
+  else if (result.totalScore >= 90) { scoreColor = c.green; scoreEmoji = "✨"; }
+  else if (result.totalScore >= 85) { scoreColor = c.green; scoreEmoji = "👍"; }
+  else if (result.totalScore >= 80) { scoreColor = c.green; scoreEmoji = "👌"; }
+  else if (result.totalScore >= 75) { scoreColor = c.yellow; scoreEmoji = "📝"; }
+  else if (result.totalScore >= 68) { scoreColor = c.yellow; scoreEmoji = "🔧"; }
+  else if (result.totalScore >= 60) { scoreColor = c.yellow; scoreEmoji = "📊"; }
+  else if (result.totalScore >= 55) { scoreColor = c.red; scoreEmoji = "⚠️"; }
+  else if (result.totalScore >= 50) { scoreColor = c.red; scoreEmoji = "🚨"; }
+  const grade = gradeForScore(result.totalScore);
 
   lines.push(`${scoreEmoji} Overall Score: ${c.bold}${scoreColor}${result.totalScore}/100${c.reset} ${c.dim}(${grade})${c.reset}`);
   lines.push("");
@@ -219,18 +217,7 @@ function formatTerminalColored(result: LintResult): string {
     else if (cat.score >= 68) barColor = c.yellow;
 
     // Grade per category - 50점 미만 F, B+ 이하 촘촘하게
-    let catGrade = "F";
-    if (cat.score >= 98) catGrade = "S";
-    else if (cat.score >= 96) catGrade = "A+";
-    else if (cat.score >= 93) catGrade = "A";
-    else if (cat.score >= 90) catGrade = "A-";
-    else if (cat.score >= 85) catGrade = "B+";
-    else if (cat.score >= 80) catGrade = "B";
-    else if (cat.score >= 75) catGrade = "B-";
-    else if (cat.score >= 68) catGrade = "C+";
-    else if (cat.score >= 60) catGrade = "C";
-    else if (cat.score >= 55) catGrade = "C-";
-    else if (cat.score >= 50) catGrade = "D";
+    const catGrade = gradeForScore(cat.score);
 
     const bar = makeBar(cat.score);
     lines.push(`  ${label} ${barColor}${bar}${c.reset} ${cat.score} ${c.dim}${catGrade}${c.reset}`);
