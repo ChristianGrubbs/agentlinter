@@ -23,7 +23,7 @@ export function logEngineDecision({ event, loc, ctx }: {
   };
 
   try {
-    appendFileSync(path, `${JSON.stringify(record)}\n`, "utf8");
+    appendFileSync(path, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
   } catch {
     // Decision logging must not affect a lint result.
   }
