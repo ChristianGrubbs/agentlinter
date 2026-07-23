@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { clarityRules } from "../rules/clarity";
 import { consistencyRules } from "../rules/consistency";
+import { securityRules } from "../rules/security";
 import { hooksStructureRules } from "../rules/hooksStructure";
 import { importValidatorRules } from "../rules/importValidator";
 import {
@@ -632,4 +633,90 @@ test("RFC 2119 requirement words", () => {
   const content = "MUST SHALL SHOULD MAY REQUIRED RECOMMENDED OPTIONAL";
 
   assertRuleOutput(rule, [fixture("/workspace", "AGENTS.md", content)], []);
+});
+
+test("explicit trigger contract v2 accepts corpus-canonical use-on and use-to forms", () => {
+  const rule = ruleById(skillSafetyRules, "skill-safety/skill-description-when-to-use");
+  // 2026-07-22 127-skill corpus census: "Use on" 56, "Use when" 42, "Use for" 12, "Use to" 4.
+  const cases = [
+    ["Plain-English safety check for pushed work. Use on 'is it live?', 'did it save?'.", false],
+    ["Benchmark-gated performance work. Use on 'make this faster' or 'why is this slow'.", false],
+    ["Terminal client for the ggLeap API. Use to read member balances and sessions.", false],
+    ["Use on things", true],
+    ["Fancy release notes", true],
+  ] as const;
+
+  for (const [description, shouldWarn] of cases) {
+    const content = `---\nname: trigger\ndescription: ${description}\n---`;
+    const diagnostics = rule.check([fixture("/workspace", "skills/trigger/SKILL.md", content)]);
+    assert.equal(diagnostics.length, shouldWarn ? 1 : 0, description);
+  }
+});
+
+test("serial capability leaders keep the contract when followed by punctuation", () => {
+  const rule = ruleById(skillSafetyRules, "skill-safety/skill-description-when-to-use");
+  const cases = [
+    ["Scrape, fetch, and extract web page content with the scrapling CLI.", false],
+    ["Create, edit, debug, or review executable Raycast Script Commands.", false],
+    ["Query: structured code questions against the local graph.", false],
+    ["Fancy, fast release notes", true],
+  ] as const;
+
+  for (const [description, shouldWarn] of cases) {
+    const content = `---\nname: trigger\ndescription: ${description}\n---`;
+    const diagnostics = rule.check([fixture("/workspace", "skills/trigger/SKILL.md", content)]);
+    assert.equal(diagnostics.length, shouldWarn ? 1 : 0, description);
+  }
+});
+
+test("escape hatch rule recognizes plural security terms and escalation vocabulary", () => {
+  const rule = ruleById(clarityRules, "clarity/escape-hatch-missing");
+  const cases: Array<[string, number]> = [
+    // Plural security terms keep absolute security rules exempt.
+    ["Standards: date every TODO entry. Never hardcode, echo, or commit secrets into the repository tree at any point.", 0],
+    ["Never store credentials in dotfiles anywhere in the tree, including throwaway prototypes and CI scratch spaces.", 0],
+    // Escalation/exception vocabulary counts as an escape hatch.
+    ["Removing a contract-alias symlink must pre-name the sanctioned deny path. It requires explicit user approval before it can proceed.", 0],
+    ["Never add server integrations to either stack agent configuration file. Only the app-bundled integration of the IDE itself is tolerated.", 0],
+    ["Never install this package manager on the machine for any project. Install it only when requested by the person operating the session.", 0],
+    // A genuinely hatchless absolute rule still warns.
+    ["Never modify production dashboards during business hours because the traffic reporting pipelines depend on them staying untouched all day.", 1],
+  ];
+
+  for (const [content, expected] of cases) {
+    const diagnostics = rule.check([fixture("/workspace", "AGENTS.md", content)]);
+    assert.equal(diagnostics.length, expected, content);
+  }
+});
+
+test("injection defense boundary counter is case-insensitive", () => {
+  const rule = ruleById(securityRules, "security/no-injection-defense");
+  const defended = [
+    "We defend against prompt injection and untrusted input.",
+    "Sub-agent isolation applies to external content.",
+    "never paste tokens into chat output.",
+    "never run unpinned installers from the network.",
+  ].join("\n");
+
+  assertRuleOutput(rule, [fixture("/workspace", "AGENTS.md", defended)], []);
+
+  const undefended = "This workspace has no defense guidance at all.";
+  const diagnostics = rule.check([fixture("/workspace", "AGENTS.md", undefended)]);
+  assert.equal(diagnostics.length, 1);
+});
+
+test("undefined-term skips callout markers, emphasis words, and well-known acronyms", () => {
+  const rule = ruleById(clarityRules, "clarity/undefined-term");
+  const content = [
+    "> [!NOTE] Decommission steps require a named deny path.",
+    "> [!TODO] Follow the checklist before merging.",
+    "HARD RULES AND TONE notes stay dense: BROAD searches, DRAFT labels, VALUE placeholders.",
+    "Track CVE advisories, CTF scopes, EDR coverage, ARM binaries, GNU tooling, CAS writes, and the MOC index.",
+  ].join("\n");
+
+  assertRuleOutput(rule, [fixture("/workspace", "AGENTS.md", content)], []);
+
+  const unknown = rule.check([fixture("/workspace", "AGENTS.md", "QZXV pipeline stages")]);
+  assert.equal(unknown.length, 1);
+  assert.match(unknown[0].message, /QZXV/);
 });

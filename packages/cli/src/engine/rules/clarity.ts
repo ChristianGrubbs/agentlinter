@@ -289,8 +289,8 @@ export const clarityRules: Rule[] = [
     check(files) {
       const diagnostics: Diagnostic[] = [];
       const ABSOLUTE_PATTERNS = /\b(never|always|must|under no circumstances|absolutely|without exception)\b/i;
-      const ESCAPE_PATTERNS = /\b(unless|except|in emergency|escalate|ask the user|if unavoidable|override|exception)\b|예외|제외|경우에만|때만|직접.*지시|지시.*경우|허용|단,\s|단\s+(?:형|사용자)/i;
-      const SECURITY_TERMS = /\b(api.?key|token|secret|password|credential|private.?key|leak|expose)\b/i;
+      const ESCAPE_PATTERNS = /\b(unless|except|in emergency|escalate|ask the user|if unavoidable|override|exception|approval|approve[ds]?|confirmation|confirm(?:ed|-first)?|when requested|only (?:when|if)|sanctioned|tolerated|permitted)\b|예외|제외|경우에만|때만|직접.*지시|지시.*경우|허용|단,\s|단\s+(?:형|사용자)/i;
+      const SECURITY_TERMS = /\b(api.?keys?|tokens?|secrets?|passwords?|credentials?|private.?keys?|leak|expose)\b/i;
       const coreFiles = files.filter(
         (f) => !f.name.startsWith("compound/") && !f.name.startsWith("memory/") && f.name.endsWith(".md")
       );
@@ -536,6 +536,13 @@ export const clarityRules: Rule[] = [
         "KIM", "YK", "DC", "GA", "TWIN", "PLAYA", "SKINN", "ACID", "NASA",
         "HIT", "GCC", "PC", "JSONL", "ILS", "ODD", "GDA", "YG", "UK", "CN",
         "SRE", "VC", "PE", "RULES", "EA", "DDG", "TAB", "TASK",
+        // English words typeset in caps for emphasis — NOT acronyms
+        "AND", "OR", "THE", "FOR", "WITH", "NOTE", "TODO", "HARD", "BROAD",
+        "DRAFT", "VALUE", "TONE", "PLAN", "SHIP", "STOP", "DONE", "WORK",
+        // Well-known security / platform acronyms
+        "CVE", "CTF", "EDR", "ARM", "GNU", "CAS", "MOC", "SSH", "GPG",
+        // Date-format placeholders
+        "MM", "DD", "YYYY", "HH", "SS",
       ]);
       const coreFiles = files.filter(
         (f) => !f.name.startsWith("compound/") && !f.name.startsWith("memory/") && f.name.endsWith(".md")
@@ -543,7 +550,8 @@ export const clarityRules: Rule[] = [
       for (const file of coreFiles) {
         const found = new Set<string>();
         for (let i = 0; i < file.lines.length; i++) {
-          const line = file.lines[i];
+          // Callout markers ([!NOTE], [!TIP], ...) are Markdown syntax, not acronyms
+          const line = file.lines[i].replace(/\[![A-Z]+\]/g, " ");
           const acronyms = line.match(/\b[A-Z]{2,5}\b/g);
           if (!acronyms) continue;
           for (const acr of acronyms) {
