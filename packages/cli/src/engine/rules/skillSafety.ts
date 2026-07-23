@@ -243,13 +243,16 @@ function hasUsableTriggerDescription(description: string): boolean {
     logSkillSafetyDecision({
       event: "skill-safety.trigger-contract",
       loc: "hasUsableTriggerDescription",
-      ctx: { contract_version: "v1", trigger_form: triggerForm, accepted },
+      ctx: { contract_version: "v2", trigger_form: triggerForm, accepted },
     });
     return false;
   }
 
+  // v2 (2026-07-22, 127-skill corpus census): "use on" (56) and "use to" (4)
+  // join "use for" as explicit forms; a leader may carry serial punctuation
+  // ("Scrape, fetch, and extract ..."). Leader vocabulary itself is unchanged.
   const explicitTrigger = normalized.match(
-    /\b(?:when(?:ever)?|use\s+for|triggered\s+by)\b\s*(.*)$/i,
+    /\b(?:when(?:ever)?|use\s+(?:for|on|to)|triggered\s+by)\b\s*(.*)$/i,
   );
   if (explicitTrigger) {
     triggerForm = "explicit";
@@ -258,7 +261,7 @@ function hasUsableTriggerDescription(description: string): boolean {
     triggerForm = "localized-explicit";
     accepted = true;
   } else {
-    const capability = normalized.match(/^([\p{L}][\p{L}'-]*)\s+(.+)$/u);
+    const capability = normalized.match(/^([\p{L}][\p{L}'-]*)[,:]?\s+(.+)$/u);
     if (capability && CAPABILITY_LEADER_CASEFOLD_V1.has(capability[1].toLowerCase())) {
       triggerForm = "capability-leader-v1";
       accepted = hasConcreteObject(capability[2]);
@@ -267,7 +270,7 @@ function hasUsableTriggerDescription(description: string): boolean {
   logSkillSafetyDecision({
     event: "skill-safety.trigger-contract",
     loc: "hasUsableTriggerDescription",
-    ctx: { contract_version: "v1", trigger_form: triggerForm, accepted },
+    ctx: { contract_version: "v2", trigger_form: triggerForm, accepted },
   });
   return accepted;
 }
@@ -469,6 +472,9 @@ export const skillSafetyRules: Rule[] = [
         if (!file.content.startsWith("---")) continue;
 
         const frontmatter = file.content.split("---")[1] || "";
+        // Reference-only skills are never invocation-matched by description,
+        // so the trigger contract does not apply to them.
+        if (/^disable-model-invocation:\s*true\s*$/m.test(frontmatter)) continue;
         const description = extractDescription(frontmatter);
         if (!description) continue; // missing description handled by has-metadata
 

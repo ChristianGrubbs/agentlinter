@@ -274,7 +274,7 @@ export const securityRules: Rule[] = [
       const hasExternalHandling = externalHandlingPatterns.some((p) => p.test(allContent));
 
       // Check for permission boundaries (NEVER/DO NOT patterns)
-      const neverPatterns = allContent.match(/\b(?:NEVER|DO NOT|MUST NOT|FORBIDDEN|PROHIBITED|SHALL NOT)\b/g) || [];
+      const neverPatterns = allContent.match(/\b(?:NEVER|DO NOT|MUST NOT|FORBIDDEN|PROHIBITED|SHALL NOT)\b/gi) || [];
       const hasPermissionBoundaries = neverPatterns.length >= 2;
 
       const issues: string[] = [];
