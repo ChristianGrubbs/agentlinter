@@ -153,13 +153,10 @@ async function main() {
             .join(" ");
           
           const grade = gradeForScore(result.totalScore);
-          const percentile = result.totalScore >= 98 ? 1 : result.totalScore >= 96 ? 3 : result.totalScore >= 93 ? 5 : result.totalScore >= 90 ? 8 : result.totalScore >= 85 ? 12 : result.totalScore >= 80 ? 18 : result.totalScore >= 75 ? 25 : result.totalScore >= 68 ? 35 : 50;
-          
           const shareText = `🧬 AgentLinter Score: ${result.totalScore}/100
 
-⭐ ${grade} tier · Top ${percentile}%
+⭐ ${grade} (heuristic configuration score)
 
-Is YOUR AI agent secure?
 Free & open source — try it yourself:
 
 npx agentlinter

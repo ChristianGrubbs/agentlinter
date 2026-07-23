@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { formatJSON } from "../reporter";
+import { formatJSON, formatTerminal } from "../reporter";
 import { allRules } from "../rules";
 import { lint } from "../scorer";
 import { calculateWeightedTotal } from "../scoringPolicy";
@@ -253,6 +253,25 @@ test("serializes the schema-v2 Report contract with complete severity, scan, rul
   assert.equal(categories.reduce((sum, category) => sum + category.diagnosticCount, 0), diagnostics.length);
   assert.equal(report.score, result.totalScore);
   assert.equal(report.grade, gradeFor(result.totalScore));
+});
+
+test("terminal formatter reports all four severities distinctly", () => {
+  const { result } = reportFor("# Agent\nBe helpful.");
+  const withAllSeverities = {
+    ...result,
+    diagnostics: (["critical", "error", "warning", "info"] as Severity[]).map((severity) => ({
+      severity,
+      category: "structure" as Category,
+      rule: `fixture/${severity}`,
+      file: "AGENTS.md",
+      message: `Fixture ${severity} diagnostic.`,
+    })),
+  };
+  const rendered = formatTerminal(withAllSeverities);
+  assert.match(rendered, /1 critical\(s\), 1 error\(s\), 1 warning\(s\), 1 info\(s\)/);
+  assert.match(rendered, /❌ CRIT\s+AGENTS\.md/);
+  assert.match(rendered, /❌ ERROR\s+AGENTS\.md/);
+  assert.match(rendered, /Fixture error diagnostic\./);
 });
 
 test("normalizes deterministic Reports by excluding only their timestamp", () => {

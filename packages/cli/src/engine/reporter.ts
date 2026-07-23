@@ -44,11 +44,13 @@ export function formatTerminal(result: LintResult): string {
   lines.push("");
 
   // Diagnostics
-  const errors = result.diagnostics.filter((d) => d.severity === "critical");
+  const criticals = result.diagnostics.filter((d) => d.severity === "critical");
+  const errors = result.diagnostics.filter((d) => d.severity === "error");
   const warnings = result.diagnostics.filter((d) => d.severity === "warning");
   const infos = result.diagnostics.filter((d) => d.severity === "info");
 
   const counts = [
+    criticals.length > 0 ? `${criticals.length} critical(s)` : null,
     errors.length > 0 ? `${errors.length} error(s)` : null,
     warnings.length > 0 ? `${warnings.length} warning(s)` : null,
     infos.length > 0 ? `${infos.length} info(s)` : null,
@@ -62,13 +64,15 @@ export function formatTerminal(result: LintResult): string {
   }
 
   // List diagnostics grouped by severity
-  for (const diag of [...errors, ...warnings, ...infos]) {
+  for (const diag of [...criticals, ...errors, ...warnings, ...infos]) {
     const icon =
       diag.severity === "critical"
-        ? "❌ ERROR"
-        : diag.severity === "warning"
-          ? "⚠️  WARN"
-          : "ℹ️  INFO";
+        ? "❌ CRIT"
+        : diag.severity === "error"
+          ? "❌ ERROR"
+          : diag.severity === "warning"
+            ? "⚠️  WARN"
+            : "ℹ️  INFO";
 
     const location = diag.line ? `${diag.file}:${diag.line}` : diag.file;
     lines.push(`  ${icon}  ${location}`);

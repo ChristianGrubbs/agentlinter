@@ -31,7 +31,7 @@ function logSkillSafetyDecision({
   appendFileSync(
     process.env.AGENTLINTER_SKILL_SAFETY_LOG_PATH || SKILL_SAFETY_LOG_DEFAULT_PATH,
     `${JSON.stringify(entry)}\n`,
-    "utf8",
+    { encoding: "utf8", mode: 0o600 },
   );
 }
 
