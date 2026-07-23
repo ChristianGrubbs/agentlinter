@@ -472,6 +472,9 @@ export const skillSafetyRules: Rule[] = [
         if (!file.content.startsWith("---")) continue;
 
         const frontmatter = file.content.split("---")[1] || "";
+        // Reference-only skills are never invocation-matched by description,
+        // so the trigger contract does not apply to them.
+        if (/^disable-model-invocation:\s*true\s*$/m.test(frontmatter)) continue;
         const description = extractDescription(frontmatter);
         if (!description) continue; // missing description handled by has-metadata
 

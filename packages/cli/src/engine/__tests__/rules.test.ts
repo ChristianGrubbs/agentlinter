@@ -720,3 +720,13 @@ test("undefined-term skips callout markers, emphasis words, and well-known acron
   assert.equal(unknown.length, 1);
   assert.match(unknown[0].message, /QZXV/);
 });
+
+test("reference-only skills with disable-model-invocation skip the trigger contract", () => {
+  const rule = ruleById(skillSafetyRules, "skill-safety/skill-description-when-to-use");
+  const flagged = "---\nname: reference\ndescription: Reference for writing skills well.\ndisable-model-invocation: true\n---";
+  assertRuleOutput(rule, [fixture("/workspace", "skills/reference/SKILL.md", flagged)], []);
+
+  const invocable = "---\nname: reference\ndescription: Reference for writing skills well.\n---";
+  const diagnostics = rule.check([fixture("/workspace", "skills/reference/SKILL.md", invocable)]);
+  assert.equal(diagnostics.length, 1);
+});
